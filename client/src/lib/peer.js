@@ -6,6 +6,30 @@ function delay(ms) {
 }
 
 /**
+ * PeerJS tears down the whole media call when its auxiliary data
+ * channel closes. That is a false hang-up. Keep media alive.
+ */
+export function disableAuxHangup(call) {
+  if (!call || call.__auxPatched) return;
+  call.__auxPatched = true;
+  const orig = call._initializeDataChannel;
+  if (typeof orig === "function") {
+    call._initializeDataChannel = function patchedInit(dc) {
+      orig.call(this, dc);
+      if (this.dataChannel) this.dataChannel.onclose = () => {};
+    };
+  }
+  if (call.dataChannel) call.dataChannel.onclose = () => {};
+}
+
+const origCall = Peer.prototype.call;
+Peer.prototype.call = function patchedCall(peerId, stream, options) {
+  const conn = origCall.call(this, peerId, stream, options);
+  disableAuxHangup(conn);
+  return conn;
+};
+
+/**
  * Create a PeerJS peer and return it immediately so callers can attach
  * `call` listeners before the id is claimed.
  */
