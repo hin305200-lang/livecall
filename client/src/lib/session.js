@@ -1,3 +1,4 @@
+import { loadIceConfig } from "./ice.js";
 import { createPeer, openPeer } from "./peer.js";
 import { peerIdForRoom } from "./rooms.js";
 import { createPeerConnection } from "./webrtc.js";
@@ -111,6 +112,7 @@ export function startSession({
   let peer;
   let conn;
   let rtc;
+  let rtcConfig;
   let inCall = false;
   let guestLoop = false;
   let restartingIce = false;
@@ -125,6 +127,7 @@ export function startSession({
     if (rtc) return rtc;
     rtc = createPeerConnection({
       localStream,
+      rtcConfig,
       onRemoteStream: (stream) => {
         inCall = true;
         onRemoteStream(stream);
@@ -160,7 +163,7 @@ export function startSession({
               }, 5000);
             }
           }
-          onError("Connection failed. Try again on the same network, or a different browser.");
+          onError("Connection failed. Wait a few seconds and try again, or use a different browser.");
         }
         if (state === "disconnected") onStatus("reconnecting");
       },
@@ -408,7 +411,11 @@ export function startSession({
     }
   }
 
-  const started = isHost ? runHost() : runGuest();
+  const started = (async () => {
+    rtcConfig = await loadIceConfig();
+    if (destroyed) return;
+    return isHost ? runHost() : runGuest();
+  })();
   started.catch((err) => {
     if (destroyed) return;
     onStatus("error");

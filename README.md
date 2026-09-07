@@ -38,14 +38,17 @@ npm run build --prefix client
 
 ### NAT traversal (STUN vs TURN)
 
-The client uses Google’s public STUN servers:
+Calls try a **direct** path first (STUN). If the two devices are on different Wi‑Fi, mobile data, or countries, media is **relayed** through TURN so the call can still connect.
 
-- `stun:stun.l.google.com:19302`
-- `stun:stun1.l.google.com:19302`
+Built-in relays:
 
-**STUN is not enough on every network.** Peers behind symmetric NATs or strict firewalls cannot establish a direct path. For production you need a **TURN** server (e.g. [coturn](https://github.com/coturn/coturn)).
+- `turn:eu-0.turn.peerjs.com:3478` (UDP + TCP)
+- `turn:us-0.turn.peerjs.com:3478` (UDP + TCP)
 
-Without TURN, some calls will fail with `connectionState === "failed"` even though signaling succeeded.
+Optional extra TURN (baked in at build time):
+
+- `VITE_ICE_URL` — URL that returns `{ iceServers: [...] }`
+- `VITE_METERED_DOMAIN` + `VITE_METERED_API_KEY` — [Metered](https://www.metered.ca/stun-turn/) credential API
 
 ## Project layout
 

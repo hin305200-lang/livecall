@@ -1,12 +1,5 @@
 import Peer from "peerjs";
-
-const ICE_SERVERS = {
-  iceServers: [
-    { urls: "stun:stun.l.google.com:19302" },
-    { urls: "stun:stun1.l.google.com:19302" },
-    { urls: "stun:stun.cloudflare.com:3478" },
-  ],
-};
+import { defaultRtcConfig } from "./ice.js";
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -17,11 +10,11 @@ function delay(ms) {
  * `connection` listeners before the id is claimed.
  */
 export function openPeer(id) {
-  const peer = new Peer(id || undefined, {
-    debug: 0,
-    secure: true,
-    config: ICE_SERVERS,
-  });
+    const peer = new Peer(id || undefined, {
+      debug: 0,
+      secure: true,
+      config: defaultRtcConfig(),
+    });
 
   const ready = new Promise((resolve, reject) => {
     let settled = false;

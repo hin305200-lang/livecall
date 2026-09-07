@@ -1,26 +1,19 @@
 /**
  * 1:1 RTCPeerConnection helper.
  *
- * STUN (Google’s public servers) is enough for many home NATs, but
- * users behind symmetric NATs / strict firewalls will fail to connect
- * unless you add a TURN server in iceServers. See the README.
+ * Direct (STUN) paths are tried first. TURN relays are used when the
+ * two devices cannot reach each other across NATs, firewalls, or countries.
  */
-const ICE_SERVERS = {
-  iceServers: [
-    { urls: "stun:stun.l.google.com:19302" },
-    { urls: "stun:stun1.l.google.com:19302" },
-    { urls: "stun:stun.cloudflare.com:3478" },
-  ],
-  iceCandidatePoolSize: 10,
-};
+import { defaultRtcConfig } from "./ice.js";
 
 export function createPeerConnection({
   localStream,
+  rtcConfig,
   onRemoteStream,
   onIceCandidate,
   onConnectionStateChange,
 }) {
-  const pc = new RTCPeerConnection(ICE_SERVERS);
+  const pc = new RTCPeerConnection(rtcConfig || defaultRtcConfig());
   const pendingIce = [];
 
   if (localStream) {
