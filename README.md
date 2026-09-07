@@ -1,8 +1,8 @@
 # Pair — 1-on-1 video calling
 
-Peer-to-peer video calls in the browser. Live at [https://mysavings.site](https://mysavings.site).
+Live at [https://mysavings.site](https://mysavings.site).
 
-React + Vite on the client, WebRTC for media. Signaling uses PeerJS so the app can run on GitHub Pages (no Node server required in production).
+Create a room, share the code, and meet in a live 1-on-1 video call. Meetings use the Jitsi SFU so both people can see each other across Wi‑Fi, mobile data, and countries.
 
 Two people per room. No accounts.
 
@@ -33,12 +33,17 @@ npm run build --prefix client
 ## How it works
 
 1. **Landing** — enter a display name, create a room or join with a 6-character code / `?room=CODE` link.
-2. **Device setup** — local camera preview plus camera, microphone, and (where supported) speaker pickers via `enumerateDevices()`.
-3. **Call** — the room creator waits; the joiner connects over WebRTC. Max **2** participants.
+2. **Device setup** — local camera preview plus camera, microphone, and (where supported) speaker pickers.
+3. **Call** — both people join the same meeting room. Video is mixed on Jitsi’s servers (TURN + SFU), so a direct peer path is not required.
 
-### NAT traversal (STUN vs TURN)
+## Project layout
 
-Calls send **signaling** through the PeerJS broker (WebSocket), then send **video** peer-to-peer. If a direct path is blocked (different Wi‑Fi, mobile data, or country), media is **relayed** through PeerJS TURN servers in the US and EU.
+```
+client/                 React + Vite UI
+  src/lib/media.js      getUserMedia, device lists
+  src/lib/jitsi.js      Jitsi Meet embed
+  src/pages/            Landing, device setup, call room
+```
 
 ## Project layout
 

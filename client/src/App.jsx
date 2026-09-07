@@ -1,9 +1,8 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import Landing from "./pages/Landing.jsx";
 import DeviceSetup from "./pages/DeviceSetup.jsx";
 import CallRoom from "./pages/CallRoom.jsx";
 import { stopStream } from "./lib/media.js";
-import { createHostLobby } from "./lib/session.js";
 
 function roomFromUrl() {
   return (new URLSearchParams(window.location.search).get("room") || "").toUpperCase();
@@ -21,13 +20,6 @@ export default function App() {
     audioDeviceId: "",
     speakerDeviceId: "",
   });
-  const [localStream, setLocalStream] = useState(null);
-  const lobbyRef = useRef(null);
-
-  function disposeLobby() {
-    lobbyRef.current?.destroy();
-    lobbyRef.current = null;
-  }
 
   const persistName = useCallback((name) => {
     setDisplayName(name);
@@ -47,27 +39,20 @@ export default function App() {
     setIsHost(asHost);
     sessionStorage.setItem("isHost", asHost ? "1" : "0");
     setRoomInUrl(id);
-    disposeLobby();
-    if (asHost) lobbyRef.current = createHostLobby(id);
     setScreen("setup");
   }
 
   function goToLanding() {
-    disposeLobby();
-    stopStream(localStream);
-    setLocalStream(null);
     setScreen("landing");
   }
 
   function joinCall(stream) {
-    setLocalStream(stream);
+    // Free the camera so the meeting can use it.
+    stopStream(stream);
     setScreen("call");
   }
 
   function leaveCall() {
-    disposeLobby();
-    stopStream(localStream);
-    setLocalStream(null);
     setScreen("landing");
   }
 
@@ -78,7 +63,6 @@ export default function App() {
         roomId={roomId}
         selectedDevices={selectedDevices}
         onSelectedDevices={setSelectedDevices}
-        onPreviewStream={(stream) => lobbyRef.current?.setLocalStream(stream)}
         onBack={goToLanding}
         onJoin={joinCall}
       />
@@ -91,10 +75,7 @@ export default function App() {
         displayName={displayName}
         roomId={roomId}
         isHost={isHost}
-        localStream={localStream}
-        lobby={isHost ? lobbyRef.current : null}
         selectedDevices={selectedDevices}
-        onSelectedDevices={setSelectedDevices}
         onLeave={leaveCall}
       />
     );

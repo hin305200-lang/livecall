@@ -1,108 +1,135 @@
 import { useEffect, useRef, useState } from "react";
-import VideoTile from "../components/VideoTile.jsx";
 import CallControls from "../components/CallControls.jsx";
-import DeviceSelect from "../components/DeviceSelect.jsx";
 import ErrorBanner from "../components/ErrorBanner.jsx";
 import { CopyIcon, CheckIcon } from "../components/Icons.jsx";
-import { startSession } from "../lib/session.js";
-import {
-  classifyMediaError,
-  listDevices,
-  stopStream,
-  supportsSpeakerSelect,
-  switchDevice,
-} from "../lib/media.js";
+import { jitsiRoomName, loadJitsiApi } from "../lib/jitsi.js";
 
 export default function CallRoom({
   displayName,
   roomId,
   isHost,
-  localStream,
-  lobby,
   selectedDevices,
-  onSelectedDevices,
   onLeave,
 }) {
-  const [remoteStream, setRemoteStream] = useState(null);
-  const [peerName, setPeerName] = useState("");
-  const [status, setStatus] = useState(isHost ? "waiting" : "connecting");
   const [error, setError] = useState("");
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
-  const [devicesOpen, setDevicesOpen] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [devices, setDevices] = useState({ cameras: [], mics: [], speakers: [] });
+  const [participantCount, setParticipantCount] = useState(1);
+  const [ready, setReady] = useState(false);
 
-  const sessionRef = useRef(null);
-  const streamRef = useRef(localStream);
-
+  const mountRef = useRef(null);
+  const apiRef = useRef(null);
+  const leftRef = useRef(false);
   const shareUrl = `${window.location.origin}/?room=${roomId}`;
-  const canPickSpeaker = supportsSpeakerSelect();
+  const waiting = participantCount < 2 && ready;
+
+  function leaveOnce() {
+    if (leftRef.current) return;
+    leftRef.current = true;
+    onLeave();
+  }
 
   useEffect(() => {
-    streamRef.current = localStream;
-  }, [localStream]);
+    let cancelled = false;
 
-  useEffect(() => {
-    listDevices().then(setDevices).catch(() => {});
+    async function start() {
+      try {
+        const JitsiMeetExternalAPI = await loadJitsiApi();
+        if (cancelled || !mountRef.current) return;
 
-    const session = startSession({
-      isHost,
-      roomId,
-      localStream: streamRef.current,
-      lobby,
-      displayName,
-      onStatus: setStatus,
-      onError: setError,
-      onPeerName: setPeerName,
-      onRemoteStream: setRemoteStream,
-    });
-    sessionRef.current = session;
+        const api = new JitsiMeetExternalAPI("meet.jit.si", {
+          roomName: jitsiRoomName(roomId),
+          parentNode: mountRef.current,
+          width: "100%",
+          height: "100%",
+          lang: "en",
+          userInfo: { displayName: displayName || "Guest" },
+          configOverwrite: {
+            prejoinConfig: { enabled: false },
+            disableDeepLinking: true,
+            startWithAudioMuted: false,
+            startWithVideoMuted: false,
+            disableInviteFunctions: true,
+            hideConferenceSubject: true,
+            toolbarButtons: [],
+            p2p: { enabled: false },
+            disableAP: false,
+            constraints: {
+              video: {
+                height: { ideal: 720, max: 720, min: 240 },
+              },
+            },
+            channelLastN: 4,
+          },
+          interfaceConfigOverwrite: {
+            SHOW_JITSI_WATERMARK: false,
+            SHOW_BRAND_WATERMARK: false,
+            SHOW_WATERMARK_FOR_GUESTS: false,
+            DEFAULT_BACKGROUND: "#0c0c0b",
+            DISABLE_JOIN_LEAVE_NOTIFICATIONS: true,
+            FILM_STRIP_MAX_HEIGHT: 120,
+          },
+        });
+
+        apiRef.current = api;
+
+        const syncCount = () => {
+          const count = api.getNumberOfParticipants();
+          setParticipantCount(Number(count) || 1);
+        };
+
+        api.addListener("videoConferenceJoined", async () => {
+          setReady(true);
+          setError("");
+          syncCount();
+          try {
+            if (selectedDevices.videoDeviceId) {
+              await api.setVideoInputDevice(selectedDevices.videoDeviceId);
+            }
+            if (selectedDevices.audioDeviceId) {
+              await api.setAudioInputDevice(selectedDevices.audioDeviceId);
+            }
+            if (selectedDevices.speakerDeviceId && api.setAudioOutputDevice) {
+              await api.setAudioOutputDevice(selectedDevices.speakerDeviceId);
+            }
+          } catch (err) {
+            console.warn("Could not select devices", err);
+          }
+        });
+        api.addListener("participantJoined", syncCount);
+        api.addListener("participantLeft", syncCount);
+        api.addListener("audioMuteStatusChanged", ({ muted }) => setMicOn(!muted));
+        api.addListener("videoMuteStatusChanged", ({ muted }) => setCamOn(!muted));
+        api.addListener("readyToClose", leaveOnce);
+        api.addListener("videoConferenceLeft", () => {
+          if (!cancelled) leaveOnce();
+        });
+      } catch (err) {
+        if (!cancelled) setError(err?.message || "Could not start the meeting.");
+      }
+    }
+
+    start();
 
     return () => {
-      session.destroy();
-      sessionRef.current = null;
+      cancelled = true;
+      try {
+        apiRef.current?.dispose();
+      } catch {
+        /* ignore */
+      }
+      apiRef.current = null;
     };
-    // Start the call once. Restarting would hang up a working connection.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function toggleMic() {
-    const next = !micOn;
-    streamRef.current?.getAudioTracks().forEach((t) => {
-      t.enabled = next;
-    });
-    setMicOn(next);
+    apiRef.current?.executeCommand("toggleAudio");
   }
 
   function toggleCam() {
-    const next = !camOn;
-    streamRef.current?.getVideoTracks().forEach((t) => {
-      t.enabled = next;
-    });
-    setCamOn(next);
-  }
-
-  async function onSwitchCamera(id) {
-    onSelectedDevices((prev) => ({ ...prev, videoDeviceId: id }));
-    try {
-      const track = await switchDevice(streamRef.current, "video", id);
-      await sessionRef.current?.replaceTrack("video", track);
-      if (track) track.enabled = camOn;
-    } catch (err) {
-      setError(classifyMediaError(err));
-    }
-  }
-
-  async function onSwitchMic(id) {
-    onSelectedDevices((prev) => ({ ...prev, audioDeviceId: id }));
-    try {
-      const track = await switchDevice(streamRef.current, "audio", id);
-      await sessionRef.current?.replaceTrack("audio", track);
-      if (track) track.enabled = micOn;
-    } catch (err) {
-      setError(classifyMediaError(err));
-    }
+    apiRef.current?.executeCommand("toggleVideo");
   }
 
   async function copyLink() {
@@ -116,132 +143,52 @@ export default function CallRoom({
   }
 
   function endCall() {
-    sessionRef.current?.destroy();
-    sessionRef.current = null;
-    stopStream(streamRef.current);
-    onLeave();
+    try {
+      apiRef.current?.executeCommand("hangup");
+    } catch {
+      /* ignore */
+    }
+    try {
+      apiRef.current?.dispose();
+    } catch {
+      /* ignore */
+    }
+    apiRef.current = null;
+    leaveOnce();
   }
 
-  const waiting = status === "waiting" && !remoteStream;
-  const full = status === "full";
-  const inMeeting = Boolean(remoteStream);
-
   return (
-    <main className={`page call ${waiting || full ? "is-waiting" : ""}`}>
-      {error && !inMeeting && (
+    <main className="page call">
+      {error && (
         <div className="call-banner">
-          <ErrorBanner
-            message={error}
-            onRetry={full || status === "error" ? onLeave : undefined}
-            retryLabel="Back to home"
-          />
+          <ErrorBanner message={error} onRetry={onLeave} retryLabel="Back to home" />
         </div>
       )}
 
       <div className="stage">
-        {inMeeting ? (
-          <>
-            <VideoTile
-              stream={remoteStream}
-              speakerId={selectedDevices.speakerDeviceId}
-              label={peerName || (isHost ? "Guest" : "Host")}
-              className="stage-remote"
-            />
-            <VideoTile
-              stream={localStream}
-              muted
-              mirror
-              label={displayName}
-              className="stage-pip"
-              overlay={!camOn ? "Camera off" : null}
-            />
-          </>
-        ) : waiting || full ? (
-          <VideoTile
-            stream={localStream}
-            muted
-            mirror
-            label={displayName}
-            className="stage-local-large"
-            overlay={!camOn ? "Camera off" : null}
-          />
-        ) : (
-          <>
-            <VideoTile
-              stream={null}
-              speakerId={selectedDevices.speakerDeviceId}
-              label={peerName || (isHost ? "Guest" : "Host")}
-              className="stage-remote"
-              overlay="Connecting…"
-            />
-            <VideoTile
-              stream={localStream}
-              muted
-              mirror
-              label={displayName}
-              className="stage-pip"
-              overlay={!camOn ? "Camera off" : null}
-            />
-          </>
+        <div ref={mountRef} className="jitsi-root" />
+        {!ready && !error && <div className="call-loading">Starting meeting…</div>}
+        {waiting && (
+          <div className="wait-card">
+            <p className="eyebrow">Waiting for the other person</p>
+            <h2 className="mono room-code">{roomId}</h2>
+            <p className="hint">Share this code. They can join from any Wi‑Fi, phone data, or country.</p>
+            <button type="button" className="btn btn-secondary" onClick={copyLink}>
+              {copied ? <CheckIcon /> : <CopyIcon />}
+              {copied ? "Copied" : "Copy invite link"}
+            </button>
+          </div>
         )}
       </div>
 
-      {waiting && (
-        <div className="wait-card">
-          <p className="eyebrow">Waiting for the other person</p>
-          <h2 className="mono room-code">{roomId}</h2>
-          <p className="hint">Share this code. The other person can join from a different Wi‑Fi, phone data, or country — stay on this screen.</p>
-          <button type="button" className="btn btn-secondary" onClick={copyLink}>
-            {copied ? <CheckIcon /> : <CopyIcon />}
-            {copied ? "Copied" : "Copy invite link"}
-          </button>
-        </div>
-      )}
-
-      {devicesOpen && (
-        <div className="device-sheet card stack">
-          <div className="sheet-head">
-            <strong>Devices</strong>
-            <button type="button" className="text-btn" onClick={() => setDevicesOpen(false)}>
-              Close
-            </button>
-          </div>
-          <DeviceSelect
-            id="live-camera"
-            label="Camera"
-            value={selectedDevices.videoDeviceId}
-            options={devices.cameras}
-            onChange={onSwitchCamera}
-          />
-          <DeviceSelect
-            id="live-mic"
-            label="Microphone"
-            value={selectedDevices.audioDeviceId}
-            options={devices.mics}
-            onChange={onSwitchMic}
-          />
-          {canPickSpeaker && (
-            <DeviceSelect
-              id="live-speaker"
-              label="Speakers"
-              value={selectedDevices.speakerDeviceId}
-              options={devices.speakers}
-              onChange={(id) => onSelectedDevices((prev) => ({ ...prev, speakerDeviceId: id }))}
-            />
-          )}
-        </div>
-      )}
-
-      {!full && (
-        <CallControls
-          micOn={micOn}
-          camOn={camOn}
-          onToggleMic={toggleMic}
-          onToggleCam={toggleCam}
-          onOpenDevices={() => setDevicesOpen((v) => !v)}
-          onEnd={endCall}
-        />
-      )}
+      <CallControls
+        micOn={micOn}
+        camOn={camOn}
+        onToggleMic={toggleMic}
+        onToggleCam={toggleCam}
+        onOpenDevices={() => apiRef.current?.executeCommand("toggleTileView")}
+        onEnd={endCall}
+      />
     </main>
   );
 }
