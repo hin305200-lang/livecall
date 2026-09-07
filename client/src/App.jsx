@@ -21,6 +21,8 @@ export default function App() {
     speakerDeviceId: "",
   });
 
+  const [localStream, setLocalStream] = useState(null);
+
   const persistName = useCallback((name) => {
     setDisplayName(name);
     sessionStorage.setItem("displayName", name);
@@ -47,11 +49,13 @@ export default function App() {
   }
 
   function joinCall(stream) {
-    stopStream(stream);
-    window.setTimeout(() => setScreen("call"), 200);
+    setLocalStream(stream);
+    setScreen("call");
   }
 
   function leaveCall() {
+    stopStream(localStream);
+    setLocalStream(null);
     setScreen("landing");
   }
 
@@ -75,7 +79,9 @@ export default function App() {
         displayName={displayName}
         roomId={roomId}
         isHost={isHost}
+        localStream={localStream}
         selectedDevices={selectedDevices}
+        onLocalStream={setLocalStream}
         onLeave={leaveCall}
       />
     );

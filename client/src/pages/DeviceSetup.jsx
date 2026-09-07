@@ -184,8 +184,12 @@ export default function DeviceSetup({
         </button>
         <div>
           <p className="eyebrow">Room {roomId}</p>
-          <h1>Check your setup</h1>
-          <p className="hint">Then join the call. The meeting works on different Wi‑Fi, mobile data, and countries.</p>
+          <h1>{isHost ? "Choose OBS as your camera" : "Check your setup"}</h1>
+          <p className="hint">
+            {isHost
+              ? "The other person will see this OBS scene, not your webcam."
+              : "Then join the call. The meeting works on different Wi‑Fi, mobile data, and countries."}
+          </p>
         </div>
       </header>
 
