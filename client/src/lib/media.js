@@ -90,9 +90,51 @@ function audioConstraints(deviceId) {
   return deviceId ? { ...base, deviceId: { ideal: deviceId } } : base;
 }
 
+const HD_VIDEO = {
+  width: { ideal: 1920, min: 640 },
+  height: { ideal: 1080, min: 360 },
+  frameRate: { ideal: 30, min: 15 },
+};
+
 function videoAttempts(deviceId) {
-  if (!deviceId) return [true];
-  return [{ deviceId: { ideal: deviceId } }, { deviceId: { exact: deviceId } }, true];
+  if (!deviceId) {
+    return [
+      { ...HD_VIDEO },
+      { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+      true,
+    ];
+  }
+  return [
+    { ...HD_VIDEO, deviceId: { ideal: deviceId } },
+    { ...HD_VIDEO, deviceId: { exact: deviceId } },
+    { deviceId: { ideal: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+    { deviceId: { ideal: deviceId } },
+    true,
+  ];
+}
+
+async function boostVideoTrack(stream) {
+  const track = stream?.getVideoTracks?.()[0];
+  if (!track?.applyConstraints) return;
+  const height = track.getSettings?.().height || 0;
+  if (height >= 720) return;
+  try {
+    await track.applyConstraints({
+      width: { ideal: 1920 },
+      height: { ideal: 1080 },
+      frameRate: { ideal: 30 },
+    });
+  } catch {
+    try {
+      await track.applyConstraints({
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        frameRate: { ideal: 30 },
+      });
+    } catch {
+      /* keep whatever we got */
+    }
+  }
 }
 
 async function gum(video, audioDeviceId) {
@@ -158,7 +200,7 @@ export async function getLocalStream({
     const listed = await listDevices().catch(() => ({ cameras: [] }));
     for (const camera of listed.cameras) {
       if (!camera.deviceId) continue;
-      stream = await tryOpen({ deviceId: { ideal: camera.deviceId } });
+      stream = await tryOpen({ ...HD_VIDEO, deviceId: { ideal: camera.deviceId } });
       if (stream) break;
     }
   }
@@ -166,6 +208,8 @@ export async function getLocalStream({
   if (!stream) {
     throw lastErr || new Error("Could not access your camera or microphone.");
   }
+
+  await boostVideoTrack(stream);
 
   const listed = await listDevices().catch(() => ({ cameras: [] }));
   const wanted = cameraOrder(listed.cameras, videoDeviceId, preferVirtual)[0];
@@ -180,6 +224,7 @@ export async function getLocalStream({
       const next = await tryOpen(video);
       if (next) {
         stopStream(stream);
+        await boostVideoTrack(next);
         return next;
       }
     }

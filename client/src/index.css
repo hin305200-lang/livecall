@@ -388,6 +388,12 @@ button.video-overlay {
   aspect-ratio: auto;
 }
 
+.stage-remote video,
+.stage-local-large video {
+  object-fit: contain;
+  background: #050505;
+}
+
 .stage-pip {
   position: absolute;
   width: min(34vw, 220px);

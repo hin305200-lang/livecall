@@ -217,7 +217,7 @@ export default function CallRoom({
                 ? `${displayName || "You"} · OBS`
                 : displayName || "You"
           }
-          className={remoteStream ? "stage-remote" : "stage-local-large is-contain"}
+          className={remoteStream ? "stage-remote is-contain" : "stage-local-large is-contain"}
         />
         {remoteStream && preview && (
           <VideoTile

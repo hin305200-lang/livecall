@@ -29,9 +29,20 @@ function mediaTrack(jitsiTrack) {
   return jitsiTrack?.getTrack?.() || jitsiTrack?.track || null;
 }
 
+function applyContentHint(track) {
+  if (!track || !("contentHint" in track)) return;
+  try {
+    const obs = /obs|virtual/i.test(track.label || "");
+    track.contentHint = obs ? "detail" : "motion";
+  } catch {
+    /* ignore */
+  }
+}
+
 export async function createTracksFromStream(JitsiMeetJS, stream, deviceIds = {}) {
   const video = stream?.getVideoTracks?.()[0];
   const audio = stream?.getAudioTracks?.()[0];
+  applyContentHint(video);
   const infos = [];
 
   if (video) {
@@ -70,6 +81,15 @@ export async function createTracksFromStream(JitsiMeetJS, stream, deviceIds = {}
     cameraDeviceId: video?.getSettings?.().deviceId || deviceIds.videoDeviceId || undefined,
     micDeviceId: audio?.getSettings?.().deviceId || deviceIds.audioDeviceId || undefined,
     resolution: 1080,
+    minFps: 24,
+    maxFps: 30,
+    constraints: {
+      video: {
+        height: { ideal: 1080, max: 1080, min: 360 },
+        width: { ideal: 1920, max: 1920, min: 640 },
+        frameRate: { ideal: 30, max: 30 },
+      },
+    },
   });
 }
 
@@ -87,6 +107,7 @@ export async function joinJitsiRoom({
     JitsiMeetJS.init({
       disableAudioLevels: true,
       disableThirdPartyRequests: true,
+      disableSimulcast: true,
     });
     JitsiMeetJS.setLogLevel?.(JitsiMeetJS.logLevels?.ERROR);
     JitsiMeetJS.__mysavingsInit = true;
@@ -182,19 +203,67 @@ export async function joinJitsiRoom({
     bridgeChannel: { preferSctp: true },
     startAudioMuted: 0,
     startVideoMuted: 0,
+    resolution: 1080,
+    disableSimulcast: true,
+    channelLastN: -1,
+    enableLayerSuspension: false,
+    audioQuality: {
+      stereo: false,
+      opusMaxAverageBitrate: 64000,
+    },
+    constraints: {
+      video: {
+        height: { ideal: 1080, max: 1080, min: 360 },
+        width: { ideal: 1920, max: 1920, min: 640 },
+        frameRate: { ideal: 30, max: 30 },
+      },
+    },
+    videoQuality: {
+      codecPreferenceOrder: ["VP9", "VP8", "H264"],
+      maxBitratesVideo: {
+        low: 500000,
+        standard: 1500000,
+        high: 4000000,
+        fullHd: 6000000,
+      },
+    },
   });
   conference.setDisplayName(displayName || "Guest");
+
+  function applyVideoQuality() {
+    try {
+      conference.setSenderVideoConstraint?.(1080);
+    } catch {
+      /* ignore */
+    }
+    try {
+      conference.setReceiverConstraints?.({
+        lastN: -1,
+        defaultConstraints: { maxHeight: 1080, maxFrameRate: 30 },
+      });
+    } catch {
+      try {
+        conference.setReceiverVideoConstraint?.(1080);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
 
   conference.on(JitsiMeetJS.events.conference.TRACK_ADDED, (track) => {
     if (track.isLocal()) return;
     remoteByKey.set(`${track.getParticipantId()}-${track.getType()}`, track);
     emitRemote();
+    applyVideoQuality();
   });
   conference.on(JitsiMeetJS.events.conference.TRACK_REMOVED, (track) => {
     remoteByKey.delete(`${track.getParticipantId()}-${track.getType()}`);
     emitRemote();
   });
-  conference.on(JitsiMeetJS.events.conference.USER_JOINED, syncParticipants);
+  conference.on(JitsiMeetJS.events.conference.USER_JOINED, () => {
+    syncParticipants();
+    applyVideoQuality();
+  });
   conference.on(JitsiMeetJS.events.conference.USER_LEFT, syncParticipants);
   conference.on(JitsiMeetJS.events.conference.CONFERENCE_FAILED, (reason) => {
     onError?.(new Error(reason || "The meeting failed."));
@@ -211,6 +280,7 @@ export async function joinJitsiRoom({
   for (const track of localTracks) {
     await conference.addTrack(track);
   }
+  applyVideoQuality();
   syncParticipants();
 
   return {
