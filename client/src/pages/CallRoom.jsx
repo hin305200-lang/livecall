@@ -65,7 +65,9 @@ export default function CallRoom({
       session.destroy();
       sessionRef.current = null;
     };
-  }, [displayName, roomId, isHost, lobby]);
+    // Start the call once. Restarting would hang up a working connection.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function toggleMic() {
     const next = !micOn;
@@ -124,7 +126,6 @@ export default function CallRoom({
 
   const waiting = status === "waiting";
   const full = status === "full";
-  const connecting = status === "connecting" || status === "reconnecting";
 
   return (
     <main className={`page call ${waiting || full ? "is-waiting" : ""}`}>
@@ -230,9 +231,6 @@ export default function CallRoom({
           onOpenDevices={() => setDevicesOpen((v) => !v)}
           onEnd={endCall}
         />
-      )}
-      {!waiting && !full && connectionState && (
-        <span className={`status-pill ${connectionState}`}>{connectionState}</span>
       )}
     </main>
   );

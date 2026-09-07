@@ -78,6 +78,7 @@ export default function App() {
         roomId={roomId}
         selectedDevices={selectedDevices}
         onSelectedDevices={setSelectedDevices}
+        onPreviewStream={(stream) => lobbyRef.current?.setLocalStream(stream)}
         onBack={goToLanding}
         onJoin={joinCall}
       />

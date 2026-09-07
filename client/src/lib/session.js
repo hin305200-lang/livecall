@@ -1,22 +1,54 @@
-import { createPeer, disableAuxHangup, openPeer } from "./peer.js";
+import {
+  createPeer,
+  forceCloseCall,
+  keepCallMedia,
+  openPeer,
+  shieldCall,
+} from "./peer.js";
 import { peerIdForRoom } from "./rooms.js";
 
 const JOIN_DELAY_MS = 1200;
-const STREAM_WAIT_MS = 25000;
+const STREAM_WAIT_MS = 30000;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function hasLiveMedia(stream) {
+  return Boolean(stream?.getTracks().some((t) => t.readyState === "live"));
+}
+
 /**
- * Claim the host PeerJS id during device setup so guests can find the room.
- * Keep the latest incoming call until the host joins, then answer it.
+ * Host PeerJS id is claimed during camera setup.
+ * As soon as the camera is on, incoming calls are answered so the guest
+ * does not wait until the host taps Join.
  */
 export function createHostLobby(roomId) {
   let destroyed = false;
   let peer = null;
   let handler = null;
   let pending = null;
+  let activeCall = null;
+  let localStream = null;
+
+  function deliver(call) {
+    shieldCall(call);
+    if (handler) {
+      handler(call);
+      return;
+    }
+    if (!localStream) {
+      pending = call;
+      return;
+    }
+    try {
+      if (!call.localStream) call.answer(localStream);
+      activeCall = call;
+    } catch (err) {
+      console.warn("Could not answer during setup", err);
+      pending = call;
+    }
+  }
 
   const ready = (async () => {
     let lastErr;
@@ -28,27 +60,11 @@ export function createHostLobby(roomId) {
         if (!destroyed) peer.reconnect();
       });
       peer.on("call", (call) => {
-        disableAuxHangup(call);
         if (destroyed) {
-          try {
-            call.close();
-          } catch {
-            /* ignore */
-          }
+          forceCloseCall(call);
           return;
         }
-        if (handler) {
-          handler(call);
-          return;
-        }
-        if (pending && pending !== call) {
-          try {
-            pending.close();
-          } catch {
-            /* ignore */
-          }
-        }
-        pending = call;
+        deliver(call);
       });
       try {
         await opened.ready;
@@ -67,6 +83,26 @@ export function createHostLobby(roomId) {
     getPeer() {
       return peer;
     },
+    takeCall() {
+      const call = activeCall;
+      activeCall = null;
+      return call;
+    },
+    setLocalStream(stream) {
+      localStream = stream;
+      const pc = activeCall?.peerConnection;
+      if (pc && stream) {
+        stream.getTracks().forEach((track) => {
+          const sender = pc.getSenders().find((s) => s.track?.kind === track.kind);
+          if (sender) sender.replaceTrack(track).catch(() => {});
+        });
+      }
+      if (pending && !destroyed) {
+        const call = pending;
+        pending = null;
+        deliver(call);
+      }
+    },
     onCall(fn) {
       handler = fn;
       if (pending) {
@@ -79,6 +115,8 @@ export function createHostLobby(roomId) {
       destroyed = true;
       handler = null;
       pending = null;
+      forceCloseCall(activeCall);
+      activeCall = null;
       try {
         peer?.destroy();
       } catch {
@@ -89,10 +127,6 @@ export function createHostLobby(roomId) {
   };
 }
 
-/**
- * 1:1 call. Signaling uses the PeerJS broker (WebSocket).
- * Video uses one MediaConnection, with TURN when a direct path is blocked.
- */
 export function startSession({
   isHost,
   roomId,
@@ -117,6 +151,7 @@ export function startSession({
   let destroyed = false;
   let peer;
   let mediaCall;
+  let remoteHold = null;
   let inCall = false;
   let guestLoop = true;
   const failAttempt = [];
@@ -124,27 +159,17 @@ export function startSession({
   function closeCall() {
     const call = mediaCall;
     mediaCall = null;
-    if (!call) return;
-    try {
-      call.close();
-    } catch {
-      /* ignore */
-    }
+    forceCloseCall(call);
   }
 
-  function dropToWaitingOrRetry() {
-    inCall = false;
-    onRemoteStream(null);
-    onPeerName("");
-    onConnectionState("");
-    mediaCall = null;
-    if (isHost) {
-      onStatus("waiting");
-      onError("");
-      return;
-    }
-    onStatus("connecting");
-    onError("Reconnecting…");
+  function applyRemote(stream, call) {
+    if (destroyed || !hasLiveMedia(stream)) return;
+    remoteHold = stream;
+    inCall = true;
+    keepCallMedia(call);
+    onRemoteStream(stream);
+    onStatus("in-call");
+    onError("");
   }
 
   function watchPc(call) {
@@ -156,82 +181,65 @@ export function startSession({
       }
       const pc = call.peerConnection;
       if (!pc) {
-        if (Date.now() - started > 15000) clearInterval(timer);
+        if (Date.now() - started > 20000) clearInterval(timer);
         return;
       }
       clearInterval(timer);
+
+      pc.addEventListener("track", (event) => {
+        const stream = event.streams?.[0] || new MediaStream([event.track]);
+        applyRemote(stream, call);
+      });
+
       const onState = () => {
         if (destroyed || mediaCall !== call) return;
         const ice = pc.iceConnectionState;
         const conn = pc.connectionState;
         onConnectionState(conn || ice || "");
         if (conn === "connected" || ice === "connected" || ice === "completed") {
-          onStatus("in-call");
-          onError("");
+          if (inCall) {
+            onStatus("in-call");
+            onError("");
+          }
         }
       };
       pc.addEventListener("connectionstatechange", onState);
       pc.addEventListener("iceconnectionstatechange", onState);
-    }, 200);
+      onState();
+    }, 100);
   }
 
   function bindCall(call) {
-    disableAuxHangup(call);
+    shieldCall(call);
     mediaCall = call;
     onPeerName(call.metadata?.name || (isHost ? "Guest" : "Host"));
 
-    const onStream = (stream) => {
-      if (destroyed || mediaCall !== call || !stream) return;
-      const live = stream.getTracks().some((t) => t.readyState === "live");
-      if (!live) return;
-      inCall = true;
-      onRemoteStream(stream);
-      onStatus("in-call");
-      onError("");
-    };
-
-    call.on("stream", onStream);
-    if (call.remoteStream) onStream(call.remoteStream);
-
-    call.on("error", () => {
-      if (destroyed || mediaCall !== call) return;
-      if (!inCall) closeCall();
-    });
-
-    call.on("close", () => {
-      if (destroyed || mediaCall !== call) return;
-      dropToWaitingOrRetry();
-    });
+    call.on("stream", (stream) => applyRemote(stream, call));
+    if (call.remoteStream) applyRemote(call.remoteStream, call);
 
     watchPc(call);
   }
 
   function acceptCall(call) {
-    disableAuxHangup(call);
+    shieldCall(call);
     if (destroyed) {
-      try {
-        call.close();
-      } catch {
-        /* ignore */
-      }
+      forceCloseCall(call);
       return;
     }
-    if (inCall) {
-      try {
-        call.close();
-      } catch {
-        /* ignore */
-      }
+    if (inCall && mediaCall && mediaCall !== call) {
+      forceCloseCall(call);
       return;
     }
-    if (mediaCall && mediaCall !== call) closeCall();
+    if (mediaCall && mediaCall !== call && !inCall) {
+      mediaCall.__keepMedia = false;
+      forceCloseCall(mediaCall);
+    }
     bindCall(call);
     try {
-      call.answer(localStream);
-      onStatus("connecting");
+      if (!call.localStream) call.answer(localStream);
+      onStatus(inCall ? "in-call" : "connecting");
     } catch (err) {
       console.warn("Could not answer call", err);
-      closeCall();
     }
   }
 
@@ -241,8 +249,11 @@ export function startSession({
       if (destroyed) return;
       peer = lobby.getPeer();
       if (!peer) throw new Error("Could not open this room. Create a new one.");
+      lobby.setLocalStream(localStream);
+      const existing = lobby.takeCall();
+      if (existing) acceptCall(existing);
       lobby.onCall(acceptCall);
-      onStatus("waiting");
+      if (!inCall) onStatus("waiting");
       return;
     }
 
@@ -270,8 +281,8 @@ export function startSession({
 
   function waitForRemoteStream(call) {
     return new Promise((resolve, reject) => {
-      if (call.remoteStream?.getTracks().some((t) => t.readyState === "live")) {
-        resolve(call.remoteStream);
+      if (hasLiveMedia(call.remoteStream) || hasLiveMedia(remoteHold)) {
+        resolve(call.remoteStream || remoteHold);
         return;
       }
       let settled = false;
@@ -279,14 +290,19 @@ export function startSession({
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        clearInterval(poll);
         fn(value);
       };
       const timer = setTimeout(() => finish(reject, new Error("timeout")), STREAM_WAIT_MS);
+      const poll = setInterval(() => {
+        if (hasLiveMedia(call.remoteStream) || hasLiveMedia(remoteHold)) {
+          finish(resolve, call.remoteStream || remoteHold);
+        }
+      }, 250);
       call.once("stream", (stream) => {
-        if (stream?.getTracks().some((t) => t.readyState === "live")) finish(resolve, stream);
+        if (hasLiveMedia(stream)) finish(resolve, stream);
       });
       call.once("error", (err) => finish(reject, err));
-      call.once("close", () => finish(reject, new Error("closed")));
     });
   }
 
@@ -308,31 +324,18 @@ export function startSession({
         finish(reject, new Error("unavailable"));
         return;
       }
-      disableAuxHangup(call);
+      shieldCall(call);
       bindCall(call);
 
       failAttempt.push((err) => {
-        try {
-          call.close();
-        } catch {
-          /* ignore */
-        }
+        call.__keepMedia = false;
+        forceCloseCall(call);
         finish(reject, err);
       });
 
       waitForRemoteStream(call)
         .then((stream) => finish(resolve, stream))
         .catch((err) => finish(reject, err));
-    });
-  }
-
-  function waitUntilDropped() {
-    return new Promise((resolve) => {
-      const tick = () => {
-        if (destroyed || !inCall || !mediaCall) resolve();
-        else setTimeout(tick, 400);
-      };
-      tick();
     });
   }
 
@@ -362,18 +365,12 @@ export function startSession({
       try {
         await tryCall(hostId);
         onError("");
-        await waitUntilDropped();
-        if (destroyed) return;
-        onStatus("connecting");
-        onError("Reconnecting…");
-        await delay(JOIN_DELAY_MS);
+        return;
       } catch {
-        if (destroyed || !guestLoop) return;
-        closeCall();
-        inCall = false;
-        onRemoteStream(null);
+        if (destroyed || !guestLoop || inCall) return;
+        mediaCall = null;
         onStatus("connecting");
-        onError("Waiting for the host to join the call…");
+        onError("Waiting for the host…");
         await delay(JOIN_DELAY_MS);
       }
     }

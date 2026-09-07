@@ -19,17 +19,25 @@ export default function VideoTile({
     if (el.srcObject !== stream) el.srcObject = stream || null;
     if (!stream) return undefined;
 
+    const wantSound = !muted;
+    if (wantSound) el.muted = true;
+
     const tryPlay = () => {
       const play = el.play();
       if (play && typeof play.then === "function") {
-        play.then(() => setNeedsTap(false)).catch(() => setNeedsTap(true));
+        play
+          .then(() => {
+            if (wantSound) el.muted = false;
+            setNeedsTap(false);
+          })
+          .catch(() => setNeedsTap(true));
       }
     };
 
     tryPlay();
     el.addEventListener("loadedmetadata", tryPlay);
     return () => el.removeEventListener("loadedmetadata", tryPlay);
-  }, [stream]);
+  }, [stream, muted]);
 
   useEffect(() => {
     const el = ref.current;

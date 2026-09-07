@@ -16,6 +16,7 @@ export default function DeviceSetup({
   roomId,
   selectedDevices,
   onSelectedDevices,
+  onPreviewStream,
   onBack,
   onJoin,
 }) {
@@ -56,6 +57,7 @@ export default function DeviceSetup({
         streamRef.current = media;
         return media;
       });
+      onPreviewStream?.(media);
       await refreshDevices();
     } catch (err) {
       if (!cancelledRef.current) {
