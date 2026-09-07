@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { emitAck } from "../lib/socket.js";
+import { generateRoomId } from "../lib/rooms.js";
 import { ArrowIcon } from "../components/Icons.jsx";
 import ErrorBanner from "../components/ErrorBanner.jsx";
 
@@ -13,7 +13,7 @@ export default function Landing({ displayName, onDisplayName, initialRoomId, onR
     return name.trim().slice(0, 40);
   }
 
-  async function createRoom(e) {
+  function createRoom(e) {
     e.preventDefault();
     const display = trimmedName();
     if (!display) {
@@ -22,22 +22,12 @@ export default function Landing({ displayName, onDisplayName, initialRoomId, onR
     }
     setBusy(true);
     setError("");
-    try {
-      const res = await emitAck("create-room");
-      if (!res?.ok) {
-        setError("Could not create a room. Is the signaling server running?");
-        return;
-      }
-      onDisplayName(display);
-      onReady(res.roomId);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy(false);
-    }
+    onDisplayName(display);
+    onReady(generateRoomId(), true);
+    setBusy(false);
   }
 
-  async function joinRoom(e) {
+  function joinRoom(e) {
     e.preventDefault();
     const display = trimmedName();
     const id = roomCode.trim().toUpperCase();
@@ -51,23 +41,9 @@ export default function Landing({ displayName, onDisplayName, initialRoomId, onR
     }
     setBusy(true);
     setError("");
-    try {
-      const res = await emitAck("check-room", { roomId: id });
-      if (!res?.ok) {
-        setError("Room not found. Check the code or create a new room.");
-        return;
-      }
-      if (res.full) {
-        setError("Room is full. This call only supports two people.");
-        return;
-      }
-      onDisplayName(display);
-      onReady(res.roomId);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy(false);
-    }
+    onDisplayName(display);
+    onReady(id, false);
+    setBusy(false);
   }
 
   return (

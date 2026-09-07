@@ -1,6 +1,8 @@
 # Pair — 1-on-1 video calling
 
-Peer-to-peer video calls in the browser. React + Vite on the client, Express + Socket.io for signaling, WebRTC for media.
+Peer-to-peer video calls in the browser. Live at [https://mysavings.site](https://mysavings.site).
+
+React + Vite on the client, WebRTC for media. Signaling uses PeerJS so the app can run on GitHub Pages (no Node server required in production).
 
 Two people per room. No accounts.
 
@@ -17,30 +19,22 @@ npm run dev
 
 Then open [http://localhost:5173](http://localhost:5173).
 
-| Process | URL |
-| --- | --- |
-| Client (Vite) | http://localhost:5173 |
-| Signaling server | http://localhost:3001 |
+To try a call: open the app in two browser windows. Create a room in one, join with the code in the other.
 
-To try a call: open the app in two browser windows (or a phone on the same Wi-Fi at `http://<your-lan-ip>:5173`). Create a room in one, join with the code in the other.
+## Production (GitHub Pages)
 
-### Production-style (single origin)
+Pushes to `main` build the client and deploy it to [https://mysavings.site](https://mysavings.site).
 
 ```bash
 npm run install:all
-npm run build
-npm start
+npm run build --prefix client
 ```
-
-Serves the built client from the signaling server at [http://localhost:3001](http://localhost:3001).
 
 ## How it works
 
 1. **Landing** — enter a display name, create a room or join with a 6-character code / `?room=CODE` link.
 2. **Device setup** — local camera preview plus camera, microphone, and (where supported) speaker pickers via `enumerateDevices()`.
-3. **Call** — both peers join the Socket.io room. The person already in the room creates a WebRTC offer; the joiner answers. ICE candidates are relayed through the server. Max **2** participants; a third sees “Room is full”.
-
-Media never goes through the server. Socket.io only carries SDP and ICE.
+3. **Call** — the room creator waits; the joiner connects over WebRTC. Max **2** participants.
 
 ### NAT traversal (STUN vs TURN)
 
@@ -49,15 +43,7 @@ The client uses Google’s public STUN servers:
 - `stun:stun.l.google.com:19302`
 - `stun:stun1.l.google.com:19302`
 
-**STUN is not enough on every network.** Peers behind symmetric NATs or strict firewalls cannot establish a direct path. For production you need a **TURN** server (e.g. [coturn](https://github.com/coturn/coturn)) and extra `iceServers` entries:
-
-```js
-{
-  urls: "turn:turn.example.com:3478",
-  username: "user",
-  credential: "secret",
-}
-```
+**STUN is not enough on every network.** Peers behind symmetric NATs or strict firewalls cannot establish a direct path. For production you need a **TURN** server (e.g. [coturn](https://github.com/coturn/coturn)).
 
 Without TURN, some calls will fail with `connectionState === "failed"` even though signaling succeeded.
 
@@ -66,10 +52,9 @@ Without TURN, some calls will fail with `connectionState === "failed"` even thou
 ```
 client/                 React + Vite UI
   src/lib/media.js      getUserMedia, device lists, mid-call switching
-  src/lib/webrtc.js     RTCPeerConnection wrapper (STUN, ICE queue)
-  src/lib/socket.js     Socket.io client
+  src/lib/peer.js       PeerJS signaling (works on static hosting)
   src/pages/            Landing, device setup, call room
-server/index.js         Express + Socket.io signaling (max 2 per room)
+.github/workflows/      Deploy client build to GitHub Pages
 ```
 
 ## Notes

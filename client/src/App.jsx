@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import Landing from "./pages/Landing.jsx";
 import DeviceSetup from "./pages/DeviceSetup.jsx";
 import CallRoom from "./pages/CallRoom.jsx";
-import { getSocket } from "./lib/socket.js";
 import { stopStream } from "./lib/media.js";
 
 function roomFromUrl() {
@@ -15,16 +14,13 @@ export default function App() {
     () => sessionStorage.getItem("displayName") || ""
   );
   const [roomId, setRoomId] = useState(roomFromUrl);
+  const [isHost, setIsHost] = useState(false);
   const [selectedDevices, setSelectedDevices] = useState({
     videoDeviceId: "",
     audioDeviceId: "",
     speakerDeviceId: "",
   });
   const [localStream, setLocalStream] = useState(null);
-
-  useEffect(() => {
-    getSocket();
-  }, []);
 
   const persistName = useCallback((name) => {
     setDisplayName(name);
@@ -39,7 +35,8 @@ export default function App() {
     setRoomId(id);
   }, []);
 
-  function goToSetup(id) {
+  function goToSetup(id, host) {
+    setIsHost(Boolean(host));
     setRoomInUrl(id);
     setScreen("setup");
   }
@@ -79,6 +76,7 @@ export default function App() {
       <CallRoom
         displayName={displayName}
         roomId={roomId}
+        isHost={isHost}
         localStream={localStream}
         selectedDevices={selectedDevices}
         onSelectedDevices={setSelectedDevices}

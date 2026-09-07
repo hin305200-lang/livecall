@@ -4,8 +4,8 @@ import CallControls from "../components/CallControls.jsx";
 import DeviceSelect from "../components/DeviceSelect.jsx";
 import ErrorBanner from "../components/ErrorBanner.jsx";
 import { CopyIcon, CheckIcon } from "../components/Icons.jsx";
-import { getSocket } from "../lib/socket.js";
-import { createPeerConnection } from "../lib/webrtc.js";
+import { createPeer, replaceCallTrack } from "../lib/peer.js";
+import { peerIdForRoom } from "../lib/rooms.js";
 import {
   classifyMediaError,
   listDevices,
@@ -17,6 +17,7 @@ import {
 export default function CallRoom({
   displayName,
   roomId,
+  isHost,
   localStream,
   selectedDevices,
   onSelectedDevices,
@@ -24,7 +25,7 @@ export default function CallRoom({
 }) {
   const [remoteStream, setRemoteStream] = useState(null);
   const [peerName, setPeerName] = useState("");
-  const [status, setStatus] = useState("connecting");
+  const [status, setStatus] = useState(isHost ? "waiting" : "connecting");
   const [connectionState, setConnectionState] = useState("");
   const [error, setError] = useState("");
   const [micOn, setMicOn] = useState(true);
@@ -34,146 +35,157 @@ export default function CallRoom({
   const [devices, setDevices] = useState({ cameras: [], mics: [], speakers: [] });
 
   const peerRef = useRef(null);
+  const callRef = useRef(null);
   const streamRef = useRef(localStream);
-  const joinedRef = useRef(false);
 
   const shareUrl = `${window.location.origin}${window.location.pathname}?room=${roomId}`;
   const canPickSpeaker = supportsSpeakerSelect();
 
-  const teardownPeer = useCallback(() => {
-    peerRef.current?.close();
-    peerRef.current = null;
+  const teardownCall = useCallback(() => {
+    try {
+      callRef.current?.close();
+    } catch {
+      /* already closed */
+    }
+    callRef.current = null;
     setRemoteStream(null);
     setPeerName("");
     setConnectionState("");
   }, []);
 
-  const ensurePeer = useCallback(() => {
-    if (peerRef.current) return peerRef.current;
-    const socket = getSocket();
-    const peer = createPeerConnection({
-      localStream: streamRef.current,
-      onRemoteStream: (stream) => setRemoteStream(stream),
-      onIceCandidate: (candidate) => {
-        socket.emit("ice-candidate", { candidate });
-      },
-      onConnectionStateChange: (state) => {
-        setConnectionState(state);
-        if (state === "failed") {
-          setError("Connection failed. STUN may not be enough on this network — a TURN server is needed for some NATs.");
-        }
-        if (state === "connected" || state === "completed") {
-          setStatus("in-call");
-          setError("");
-        }
-        if (state === "disconnected") {
-          setStatus("reconnecting");
-        }
-      },
-    });
-    peerRef.current = peer;
-    return peer;
-  }, []);
+  const teardownAll = useCallback(() => {
+    teardownCall();
+    try {
+      peerRef.current?.destroy();
+    } catch {
+      /* already destroyed */
+    }
+    peerRef.current = null;
+  }, [teardownCall]);
 
   useEffect(() => {
     streamRef.current = localStream;
   }, [localStream]);
 
   useEffect(() => {
-    const socket = getSocket();
     let cancelled = false;
 
     listDevices().then(setDevices).catch(() => {});
 
-    // Signaling: join the Socket.io room, then either wait (first peer)
-    // or answer an offer (second peer). The first peer creates the offer
-    // when it receives `peer-joined`.
+    function wireCall(call) {
+      callRef.current = call;
+      if (call.metadata?.name) setPeerName(call.metadata.name);
 
-    function onOffer({ offer }) {
-      const peer = ensurePeer();
-      peer.handleOffer(offer).then((answer) => {
-        socket.emit("answer", { answer });
-      }).catch((err) => {
-        console.error(err);
-        setError("Could not answer the call.");
+      call.on("stream", (stream) => {
+        if (cancelled) return;
+        setRemoteStream(stream);
+        setStatus("in-call");
+        setError("");
       });
-    }
 
-    function onAnswer({ answer }) {
-      peerRef.current?.handleAnswer(answer).catch((err) => {
-        console.error(err);
-        setError("Could not complete the handshake.");
+      call.on("close", () => {
+        if (cancelled) return;
+        teardownCall();
+        setStatus(isHost ? "waiting" : "error");
+        if (!isHost) setError("The other person left.");
       });
-    }
 
-    function onIce({ candidate }) {
-      // ICE can arrive before the join ack creates the PC — always ensure it exists.
-      ensurePeer().addIceCandidate(candidate);
-    }
-
-    function onPeerJoined({ name, shouldOffer }) {
-      setPeerName(name);
-      setStatus("connecting");
-      const peer = ensurePeer();
-      if (shouldOffer) {
-        peer.createOffer().then((offer) => {
-          socket.emit("offer", { offer });
-        }).catch((err) => {
-          console.error(err);
-          setError("Could not start the call.");
-        });
+      const pc = call.peerConnection;
+      if (pc) {
+        pc.onconnectionstatechange = () => {
+          if (cancelled) return;
+          const state = pc.connectionState;
+          setConnectionState(state);
+          if (state === "failed") {
+            setError("Connection failed. STUN may not be enough on this network — a TURN server is needed for some NATs.");
+          }
+          if (state === "connected" || state === "completed") {
+            setStatus("in-call");
+            setError("");
+          }
+          if (state === "disconnected") setStatus("reconnecting");
+        };
       }
     }
 
-    function onPeerLeft() {
-      teardownPeer();
-      setStatus("waiting");
-      setError("");
-    }
-
-    socket.on("offer", onOffer);
-    socket.on("answer", onAnswer);
-    socket.on("ice-candidate", onIce);
-    socket.on("peer-joined", onPeerJoined);
-    socket.on("peer-left", onPeerLeft);
-
-    socket.emit("join-call", { roomId, name: displayName }, (res) => {
-      if (cancelled) return;
-      if (!res?.ok) {
-        if (res?.error === "full") {
-          setError("Room is full. This call only supports two people.");
-          setStatus("full");
-        } else if (res?.error === "not-found") {
-          setError("Room not found. It may have expired.");
-          setStatus("error");
-        } else {
-          setError("Could not join the room.");
-          setStatus("error");
+    async function start() {
+      try {
+        if (isHost) {
+          const peer = await createPeer(peerIdForRoom(roomId));
+          if (cancelled) {
+            peer.destroy();
+            return;
+          }
+          peerRef.current = peer;
+          peer.on("error", (err) => {
+            if (cancelled) return;
+            if (err?.type === "unavailable-id") {
+              setError("This room is already in use. Create a new room.");
+              setStatus("error");
+              return;
+            }
+            setError(err?.message || "Could not start the room.");
+          });
+          peer.on("call", (call) => {
+            if (callRef.current?.open) {
+              call.close();
+              return;
+            }
+            setPeerName(call.metadata?.name || "Guest");
+            setStatus("connecting");
+            call.answer(streamRef.current);
+            wireCall(call);
+          });
+          setStatus("waiting");
+          return;
         }
-        return;
-      }
 
-      joinedRef.current = true;
-      if (res.peer) {
-        setPeerName(res.peer.name);
-        setStatus("connecting");
-        ensurePeer();
-      } else {
-        setStatus("waiting");
+        const peer = await createPeer();
+        if (cancelled) {
+          peer.destroy();
+          return;
+        }
+        peerRef.current = peer;
+        peer.on("error", (err) => {
+          if (cancelled) return;
+          if (err?.type === "peer-unavailable") {
+            setError("Room not found. Create a room first, or check the code.");
+            setStatus("error");
+            return;
+          }
+          setError(err?.message || "Could not join the room.");
+          setStatus("error");
+        });
+
+        const call = peer.call(peerIdForRoom(roomId), streamRef.current, {
+          metadata: { name: displayName },
+        });
+        if (!call) {
+          setError("Room not found. Create a room first, or check the code.");
+          setStatus("error");
+          return;
+        }
+        wireCall(call);
+      } catch (err) {
+        if (cancelled) return;
+        if (err?.type === "unavailable-id") {
+          setError("This room is already in use. Create a new room.");
+        } else if (err?.type === "peer-unavailable") {
+          setError("Room not found. Create a room first, or check the code.");
+        } else {
+          setError(err?.message || "Could not connect.");
+        }
+        setStatus("error");
       }
-    });
+    }
+
+    start();
 
     return () => {
       cancelled = true;
-      socket.off("offer", onOffer);
-      socket.off("answer", onAnswer);
-      socket.off("ice-candidate", onIce);
-      socket.off("peer-joined", onPeerJoined);
-      socket.off("peer-left", onPeerLeft);
-      teardownPeer();
-      if (joinedRef.current) socket.emit("leave-call");
+      teardownAll();
     };
-  }, [displayName, roomId, ensurePeer, teardownPeer]);
+  }, [displayName, roomId, isHost, teardownCall, teardownAll]);
 
   function toggleMic() {
     const next = !micOn;
@@ -195,7 +207,7 @@ export default function CallRoom({
     onSelectedDevices((prev) => ({ ...prev, videoDeviceId: id }));
     try {
       const track = await switchDevice(streamRef.current, "video", id);
-      await peerRef.current?.replaceTrack("video", track);
+      await replaceCallTrack(callRef.current, "video", track);
       if (track) track.enabled = camOn;
     } catch (err) {
       setError(classifyMediaError(err));
@@ -206,7 +218,7 @@ export default function CallRoom({
     onSelectedDevices((prev) => ({ ...prev, audioDeviceId: id }));
     try {
       const track = await switchDevice(streamRef.current, "audio", id);
-      await peerRef.current?.replaceTrack("audio", track);
+      await replaceCallTrack(callRef.current, "audio", track);
       if (track) track.enabled = micOn;
     } catch (err) {
       setError(classifyMediaError(err));
@@ -224,10 +236,8 @@ export default function CallRoom({
   }
 
   function endCall() {
-    teardownPeer();
+    teardownAll();
     stopStream(streamRef.current);
-    getSocket().emit("leave-call");
-    joinedRef.current = false;
     onLeave();
   }
 
