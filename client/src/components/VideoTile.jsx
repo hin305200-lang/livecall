@@ -62,6 +62,7 @@ export default function VideoTile({
         autoPlay
         playsInline
         muted={muted}
+        webkit-playsinline="true"
         // Local preview must be muted so autoplay is allowed.
       />
       {!stream && <div className="video-empty">No video</div>}

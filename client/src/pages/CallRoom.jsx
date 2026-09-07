@@ -26,7 +26,6 @@ export default function CallRoom({
   const [remoteStream, setRemoteStream] = useState(null);
   const [peerName, setPeerName] = useState("");
   const [status, setStatus] = useState(isHost ? "waiting" : "connecting");
-  const [connectionState, setConnectionState] = useState("");
   const [error, setError] = useState("");
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
@@ -57,7 +56,6 @@ export default function CallRoom({
       onError: setError,
       onPeerName: setPeerName,
       onRemoteStream: setRemoteStream,
-      onConnectionState: setConnectionState,
     });
     sessionRef.current = session;
 
@@ -124,12 +122,13 @@ export default function CallRoom({
     onLeave();
   }
 
-  const waiting = status === "waiting";
+  const waiting = status === "waiting" && !remoteStream;
   const full = status === "full";
+  const inMeeting = Boolean(remoteStream);
 
   return (
     <main className={`page call ${waiting || full ? "is-waiting" : ""}`}>
-      {error && (
+      {error && !inMeeting && (
         <div className="call-banner">
           <ErrorBanner
             message={error}
@@ -140,7 +139,24 @@ export default function CallRoom({
       )}
 
       <div className="stage">
-        {waiting || full ? (
+        {inMeeting ? (
+          <>
+            <VideoTile
+              stream={remoteStream}
+              speakerId={selectedDevices.speakerDeviceId}
+              label={peerName || (isHost ? "Guest" : "Host")}
+              className="stage-remote"
+            />
+            <VideoTile
+              stream={localStream}
+              muted
+              mirror
+              label={displayName}
+              className="stage-pip"
+              overlay={!camOn ? "Camera off" : null}
+            />
+          </>
+        ) : waiting || full ? (
           <VideoTile
             stream={localStream}
             muted
@@ -152,17 +168,11 @@ export default function CallRoom({
         ) : (
           <>
             <VideoTile
-              stream={remoteStream}
+              stream={null}
               speakerId={selectedDevices.speakerDeviceId}
               label={peerName || (isHost ? "Guest" : "Host")}
               className="stage-remote"
-              overlay={
-                !remoteStream
-                  ? connectionState === "failed"
-                    ? "Connection failed"
-                    : "Connecting…"
-                  : null
-              }
+              overlay="Connecting…"
             />
             <VideoTile
               stream={localStream}

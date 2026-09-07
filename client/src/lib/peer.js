@@ -4,61 +4,28 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * PeerJS closes the whole media call when its extra data channel drops.
- * That kills video even though both people are still there.
- */
-export function disableAuxHangup(call) {
-  if (!call) return;
-  const orig = call._initializeDataChannel;
-  if (typeof orig === "function" && !call.__auxPatched) {
-    call.__auxPatched = true;
-    call._initializeDataChannel = function patchedInit(dc) {
-      orig.call(this, dc);
-      if (this.dataChannel) this.dataChannel.onclose = () => {};
-    };
-  }
-  if (call.dataChannel) call.dataChannel.onclose = () => {};
-}
-
-export function shieldCall(call) {
-  disableAuxHangup(call);
-  if (!call || call.__shielded) return;
-  call.__shielded = true;
-  const origClose = call.close.bind(call);
-  call.__origClose = origClose;
-  call.close = function shieldedClose() {
-    if (call.__keepMedia) return;
-    origClose();
-  };
-}
-
-export function keepCallMedia(call) {
-  if (call) call.__keepMedia = true;
-}
-
-export function forceCloseCall(call) {
-  if (!call) return;
-  call.__keepMedia = false;
-  try {
-    (call.__origClose || call.close).call(call);
-  } catch {
-    /* ignore */
-  }
-}
-
-const origCall = Peer.prototype.call;
-Peer.prototype.call = function patchedCall(peerId, stream, options) {
-  const conn = origCall.call(this, peerId, stream, options);
-  shieldCall(conn);
-  return conn;
+const PEER_OPTIONS = {
+  debug: 0,
+  secure: true,
+  config: {
+    iceServers: [
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: "stun:stun1.l.google.com:19302" },
+      {
+        urls: [
+          "turn:eu-0.turn.peerjs.com:3478",
+          "turn:us-0.turn.peerjs.com:3478",
+        ],
+        username: "peerjs",
+        credential: "peerjsp",
+      },
+    ],
+    sdpSemantics: "unified-plan",
+  },
 };
 
 export function openPeer(id) {
-  const peer = new Peer(id || undefined, {
-    debug: 0,
-    secure: true,
-  });
+  const peer = new Peer(id || undefined, PEER_OPTIONS);
 
   const ready = new Promise((resolve, reject) => {
     let settled = false;
