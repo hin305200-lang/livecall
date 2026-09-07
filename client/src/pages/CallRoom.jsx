@@ -7,7 +7,6 @@ import { jitsiRoomName, loadJitsiApi } from "../lib/jitsi.js";
 export default function CallRoom({
   displayName,
   roomId,
-  isHost,
   selectedDevices,
   onLeave,
 }) {
@@ -16,13 +15,14 @@ export default function CallRoom({
   const [camOn, setCamOn] = useState(true);
   const [copied, setCopied] = useState(false);
   const [participantCount, setParticipantCount] = useState(1);
-  const [ready, setReady] = useState(false);
+  const [joined, setJoined] = useState(false);
 
   const mountRef = useRef(null);
   const apiRef = useRef(null);
   const leftRef = useRef(false);
+  const joinedRef = useRef(false);
   const shareUrl = `${window.location.origin}/?room=${roomId}`;
-  const waiting = participantCount < 2 && ready;
+  const waiting = joined && participantCount < 2;
 
   function leaveOnce() {
     if (leftRef.current) return;
@@ -32,55 +32,76 @@ export default function CallRoom({
 
   useEffect(() => {
     let cancelled = false;
+    let api;
 
     async function start() {
       try {
         const JitsiMeetExternalAPI = await loadJitsiApi();
         if (cancelled || !mountRef.current) return;
 
-        const api = new JitsiMeetExternalAPI("meet.jit.si", {
+        const height = Math.max(window.innerHeight, mountRef.current.clientHeight || 0, 640);
+
+        api = new JitsiMeetExternalAPI("meet.jit.si", {
           roomName: jitsiRoomName(roomId),
           parentNode: mountRef.current,
           width: "100%",
-          height: "100%",
+          height,
           lang: "en",
           userInfo: { displayName: displayName || "Guest" },
           configOverwrite: {
             prejoinConfig: { enabled: false },
+            disableInitialGUM: false,
             disableDeepLinking: true,
             startWithAudioMuted: false,
             startWithVideoMuted: false,
             disableInviteFunctions: true,
             hideConferenceSubject: true,
-            toolbarButtons: [],
+            toolbarButtons: ["microphone", "camera", "hangup", "settings", "tileview"],
             p2p: { enabled: false },
-            disableAP: false,
             constraints: {
               video: {
-                height: { ideal: 720, max: 720, min: 240 },
+                height: { ideal: 720, max: 720, min: 180 },
               },
             },
-            channelLastN: 4,
           },
           interfaceConfigOverwrite: {
             SHOW_JITSI_WATERMARK: false,
             SHOW_BRAND_WATERMARK: false,
-            SHOW_WATERMARK_FOR_GUESTS: false,
             DEFAULT_BACKGROUND: "#0c0c0b",
             DISABLE_JOIN_LEAVE_NOTIFICATIONS: true,
-            FILM_STRIP_MAX_HEIGHT: 120,
           },
         });
 
+        if (cancelled) {
+          api.dispose();
+          return;
+        }
+
         apiRef.current = api;
 
+        const iframe = api.getIFrame?.();
+        if (iframe) {
+          iframe.style.width = "100%";
+          iframe.style.height = "100%";
+          iframe.style.border = "0";
+          iframe.setAttribute(
+            "allow",
+            "camera; microphone; display-capture; autoplay; clipboard-write; fullscreen",
+          );
+        }
+
         const syncCount = () => {
-          const count = api.getNumberOfParticipants();
-          setParticipantCount(Number(count) || 1);
+          try {
+            const count = api.getNumberOfParticipants();
+            setParticipantCount(Number(count) || 1);
+          } catch {
+            /* ignore */
+          }
         };
 
         api.addListener("videoConferenceJoined", async () => {
-          setReady(true);
+          joinedRef.current = true;
+          setJoined(true);
           setError("");
           syncCount();
           try {
@@ -90,8 +111,8 @@ export default function CallRoom({
             if (selectedDevices.audioDeviceId) {
               await api.setAudioInputDevice(selectedDevices.audioDeviceId);
             }
-            if (selectedDevices.speakerDeviceId && api.setAudioOutputDevice) {
-              await api.setAudioOutputDevice(selectedDevices.speakerDeviceId);
+            if (selectedDevices.speakerDeviceId) {
+              await api.setAudioOutputDevice?.(selectedDevices.speakerDeviceId);
             }
           } catch (err) {
             console.warn("Could not select devices", err);
@@ -103,7 +124,7 @@ export default function CallRoom({
         api.addListener("videoMuteStatusChanged", ({ muted }) => setCamOn(!muted));
         api.addListener("readyToClose", leaveOnce);
         api.addListener("videoConferenceLeft", () => {
-          if (!cancelled) leaveOnce();
+          if (!cancelled && joinedRef.current) leaveOnce();
         });
       } catch (err) {
         if (!cancelled) setError(err?.message || "Could not start the meeting.");
@@ -115,7 +136,7 @@ export default function CallRoom({
     return () => {
       cancelled = true;
       try {
-        apiRef.current?.dispose();
+        api?.dispose();
       } catch {
         /* ignore */
       }
@@ -167,7 +188,6 @@ export default function CallRoom({
 
       <div className="stage">
         <div ref={mountRef} className="jitsi-root" />
-        {!ready && !error && <div className="call-loading">Starting meeting…</div>}
         {waiting && (
           <div className="wait-card">
             <p className="eyebrow">Waiting for the other person</p>
