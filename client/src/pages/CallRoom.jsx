@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import VideoTile from "../components/VideoTile.jsx";
 import CallControls from "../components/CallControls.jsx";
 import DeviceSelect from "../components/DeviceSelect.jsx";
 import ErrorBanner from "../components/ErrorBanner.jsx";
 import { CopyIcon, CheckIcon } from "../components/Icons.jsx";
-import { createPeer, replaceCallTrack } from "../lib/peer.js";
-import { peerIdForRoom } from "../lib/rooms.js";
+import { startSession } from "../lib/session.js";
 import {
   classifyMediaError,
   listDevices,
@@ -19,6 +18,7 @@ export default function CallRoom({
   roomId,
   isHost,
   localStream,
+  lobby,
   selectedDevices,
   onSelectedDevices,
   onLeave,
@@ -34,158 +34,38 @@ export default function CallRoom({
   const [copied, setCopied] = useState(false);
   const [devices, setDevices] = useState({ cameras: [], mics: [], speakers: [] });
 
-  const peerRef = useRef(null);
-  const callRef = useRef(null);
+  const sessionRef = useRef(null);
   const streamRef = useRef(localStream);
 
-  const shareUrl = `${window.location.origin}${window.location.pathname}?room=${roomId}`;
+  const shareUrl = `${window.location.origin}/?room=${roomId}`;
   const canPickSpeaker = supportsSpeakerSelect();
-
-  const teardownCall = useCallback(() => {
-    try {
-      callRef.current?.close();
-    } catch {
-      /* already closed */
-    }
-    callRef.current = null;
-    setRemoteStream(null);
-    setPeerName("");
-    setConnectionState("");
-  }, []);
-
-  const teardownAll = useCallback(() => {
-    teardownCall();
-    try {
-      peerRef.current?.destroy();
-    } catch {
-      /* already destroyed */
-    }
-    peerRef.current = null;
-  }, [teardownCall]);
 
   useEffect(() => {
     streamRef.current = localStream;
   }, [localStream]);
 
   useEffect(() => {
-    let cancelled = false;
-
     listDevices().then(setDevices).catch(() => {});
 
-    function wireCall(call) {
-      callRef.current = call;
-      if (call.metadata?.name) setPeerName(call.metadata.name);
-
-      call.on("stream", (stream) => {
-        if (cancelled) return;
-        setRemoteStream(stream);
-        setStatus("in-call");
-        setError("");
-      });
-
-      call.on("close", () => {
-        if (cancelled) return;
-        teardownCall();
-        setStatus(isHost ? "waiting" : "error");
-        if (!isHost) setError("The other person left.");
-      });
-
-      const pc = call.peerConnection;
-      if (pc) {
-        pc.onconnectionstatechange = () => {
-          if (cancelled) return;
-          const state = pc.connectionState;
-          setConnectionState(state);
-          if (state === "failed") {
-            setError("Connection failed. STUN may not be enough on this network — a TURN server is needed for some NATs.");
-          }
-          if (state === "connected" || state === "completed") {
-            setStatus("in-call");
-            setError("");
-          }
-          if (state === "disconnected") setStatus("reconnecting");
-        };
-      }
-    }
-
-    async function start() {
-      try {
-        if (isHost) {
-          const peer = await createPeer(peerIdForRoom(roomId));
-          if (cancelled) {
-            peer.destroy();
-            return;
-          }
-          peerRef.current = peer;
-          peer.on("error", (err) => {
-            if (cancelled) return;
-            if (err?.type === "unavailable-id") {
-              setError("This room is already in use. Create a new room.");
-              setStatus("error");
-              return;
-            }
-            setError(err?.message || "Could not start the room.");
-          });
-          peer.on("call", (call) => {
-            if (callRef.current?.open) {
-              call.close();
-              return;
-            }
-            setPeerName(call.metadata?.name || "Guest");
-            setStatus("connecting");
-            call.answer(streamRef.current);
-            wireCall(call);
-          });
-          setStatus("waiting");
-          return;
-        }
-
-        const peer = await createPeer();
-        if (cancelled) {
-          peer.destroy();
-          return;
-        }
-        peerRef.current = peer;
-        peer.on("error", (err) => {
-          if (cancelled) return;
-          if (err?.type === "peer-unavailable") {
-            setError("Room not found. Create a room first, or check the code.");
-            setStatus("error");
-            return;
-          }
-          setError(err?.message || "Could not join the room.");
-          setStatus("error");
-        });
-
-        const call = peer.call(peerIdForRoom(roomId), streamRef.current, {
-          metadata: { name: displayName },
-        });
-        if (!call) {
-          setError("Room not found. Create a room first, or check the code.");
-          setStatus("error");
-          return;
-        }
-        wireCall(call);
-      } catch (err) {
-        if (cancelled) return;
-        if (err?.type === "unavailable-id") {
-          setError("This room is already in use. Create a new room.");
-        } else if (err?.type === "peer-unavailable") {
-          setError("Room not found. Create a room first, or check the code.");
-        } else {
-          setError(err?.message || "Could not connect.");
-        }
-        setStatus("error");
-      }
-    }
-
-    start();
+    const session = startSession({
+      isHost,
+      roomId,
+      localStream: streamRef.current,
+      lobby,
+      displayName,
+      onStatus: setStatus,
+      onError: setError,
+      onPeerName: setPeerName,
+      onRemoteStream: setRemoteStream,
+      onConnectionState: setConnectionState,
+    });
+    sessionRef.current = session;
 
     return () => {
-      cancelled = true;
-      teardownAll();
+      session.destroy();
+      sessionRef.current = null;
     };
-  }, [displayName, roomId, isHost, teardownCall, teardownAll]);
+  }, [displayName, roomId, isHost, lobby]);
 
   function toggleMic() {
     const next = !micOn;
@@ -207,7 +87,7 @@ export default function CallRoom({
     onSelectedDevices((prev) => ({ ...prev, videoDeviceId: id }));
     try {
       const track = await switchDevice(streamRef.current, "video", id);
-      await replaceCallTrack(callRef.current, "video", track);
+      await sessionRef.current?.replaceTrack("video", track);
       if (track) track.enabled = camOn;
     } catch (err) {
       setError(classifyMediaError(err));
@@ -218,7 +98,7 @@ export default function CallRoom({
     onSelectedDevices((prev) => ({ ...prev, audioDeviceId: id }));
     try {
       const track = await switchDevice(streamRef.current, "audio", id);
-      await replaceCallTrack(callRef.current, "audio", track);
+      await sessionRef.current?.replaceTrack("audio", track);
       if (track) track.enabled = micOn;
     } catch (err) {
       setError(classifyMediaError(err));
@@ -236,13 +116,15 @@ export default function CallRoom({
   }
 
   function endCall() {
-    teardownAll();
+    sessionRef.current?.destroy();
+    sessionRef.current = null;
     stopStream(streamRef.current);
     onLeave();
   }
 
   const waiting = status === "waiting";
   const full = status === "full";
+  const connecting = status === "connecting" || status === "reconnecting";
 
   return (
     <main className={`page call ${waiting || full ? "is-waiting" : ""}`}>
@@ -271,9 +153,15 @@ export default function CallRoom({
             <VideoTile
               stream={remoteStream}
               speakerId={selectedDevices.speakerDeviceId}
-              label={peerName || "Connecting…"}
+              label={peerName || (connecting ? "Connecting…" : "Guest")}
               className="stage-remote"
-              overlay={!remoteStream ? (connectionState === "failed" ? "Connection failed" : "Connecting…") : null}
+              overlay={
+                !remoteStream
+                  ? connectionState === "failed"
+                    ? "Connection failed"
+                    : "Connecting…"
+                  : null
+              }
             />
             <VideoTile
               stream={localStream}
@@ -291,7 +179,7 @@ export default function CallRoom({
         <div className="wait-card">
           <p className="eyebrow">Waiting for the other person</p>
           <h2 className="mono room-code">{roomId}</h2>
-          <p className="hint">Share this code or link. Only one other person can join.</p>
+          <p className="hint">Share this code and stay on this screen. The other person can join as soon as you created the room.</p>
           <button type="button" className="btn btn-secondary" onClick={copyLink}>
             {copied ? <CheckIcon /> : <CopyIcon />}
             {copied ? "Copied" : "Copy invite link"}

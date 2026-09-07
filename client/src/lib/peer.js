@@ -4,39 +4,68 @@ const ICE_SERVERS = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
+    { urls: "stun:stun.cloudflare.com:3478" },
   ],
 };
 
-/**
- * GitHub Pages is static, so signaling uses the public PeerJS broker
- * instead of our local Socket.io server.
- */
-export function createPeer(id) {
-  return new Promise((resolve, reject) => {
-    const peer = new Peer(id, {
-      host: "0.peerjs.com",
-      port: 443,
-      path: "/",
-      secure: true,
-      config: ICE_SERVERS,
-    });
-
-    const onError = (err) => {
-      peer.off("open", onOpen);
-      reject(err);
-    };
-    const onOpen = () => {
-      peer.off("error", onError);
-      resolve(peer);
-    };
-
-    peer.once("open", onOpen);
-    peer.once("error", onError);
-  });
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export function replaceCallTrack(call, kind, newTrack) {
-  const sender = call?.peerConnection?.getSenders().find((s) => s.track?.kind === kind);
-  if (sender) return sender.replaceTrack(newTrack);
-  return Promise.resolve();
+/**
+ * Create a PeerJS peer and return it immediately so callers can attach
+ * `connection` listeners before the id is claimed.
+ */
+export function openPeer(id) {
+  const peer = new Peer(id || undefined, {
+    debug: 0,
+    secure: true,
+    config: ICE_SERVERS,
+  });
+
+  const ready = new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      finish(reject, new Error("Could not reach the connection service. Check your network and try again."));
+    }, 15000);
+
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (fn === reject) {
+        try {
+          peer.destroy();
+        } catch {
+          /* ignore */
+        }
+      }
+      fn(value);
+    };
+
+    peer.once("open", () => finish(resolve, peer));
+    peer.once("error", (err) => finish(reject, err));
+  });
+
+  return { peer, ready };
+}
+
+export async function createPeer(id) {
+  const { ready } = openPeer(id);
+  return ready;
+}
+
+/** Host room IDs can stay claimed for a few seconds after a refresh. */
+export async function createPeerRetry(id, attempts = 8) {
+  let lastErr;
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      return await createPeer(id);
+    } catch (err) {
+      lastErr = err;
+      if (i === attempts - 1) break;
+      await delay(err?.type === "unavailable-id" ? 1500 : 800);
+    }
+  }
+  throw lastErr;
 }

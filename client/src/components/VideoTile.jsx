@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export default function VideoTile({
   stream,
@@ -10,11 +10,25 @@ export default function VideoTile({
   className = "",
 }) {
   const ref = useRef(null);
+  const [needsTap, setNeedsTap] = useState(false);
 
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
+    setNeedsTap(false);
     if (el.srcObject !== stream) el.srcObject = stream || null;
+    if (!stream) return undefined;
+
+    const tryPlay = () => {
+      const play = el.play();
+      if (play && typeof play.then === "function") {
+        play.then(() => setNeedsTap(false)).catch(() => setNeedsTap(true));
+      }
+    };
+
+    tryPlay();
+    el.addEventListener("loadedmetadata", tryPlay);
+    return () => el.removeEventListener("loadedmetadata", tryPlay);
   }, [stream]);
 
   useEffect(() => {
@@ -24,6 +38,14 @@ export default function VideoTile({
       console.warn("Could not set speaker", err);
     });
   }, [speakerId, stream]);
+
+  function tapToPlay() {
+    const el = ref.current;
+    if (!el) return;
+    el.play()
+      .then(() => setNeedsTap(false))
+      .catch(() => {});
+  }
 
   return (
     <div className={`video-tile ${className} ${mirror ? "is-mirror" : ""}`}>
@@ -36,6 +58,11 @@ export default function VideoTile({
       />
       {!stream && <div className="video-empty">No video</div>}
       {overlay && <div className="video-overlay">{overlay}</div>}
+      {needsTap && stream && (
+        <button type="button" className="video-overlay" onClick={tapToPlay}>
+          Tap to play
+        </button>
+      )}
       {label && <span className="video-label">{label}</span>}
     </div>
   );

@@ -1,8 +1,9 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import Landing from "./pages/Landing.jsx";
 import DeviceSetup from "./pages/DeviceSetup.jsx";
 import CallRoom from "./pages/CallRoom.jsx";
 import { stopStream } from "./lib/media.js";
+import { createHostLobby } from "./lib/session.js";
 
 function roomFromUrl() {
   return (new URLSearchParams(window.location.search).get("room") || "").toUpperCase();
@@ -14,13 +15,19 @@ export default function App() {
     () => sessionStorage.getItem("displayName") || ""
   );
   const [roomId, setRoomId] = useState(roomFromUrl);
-  const [isHost, setIsHost] = useState(false);
+  const [isHost, setIsHost] = useState(() => sessionStorage.getItem("isHost") === "1");
   const [selectedDevices, setSelectedDevices] = useState({
     videoDeviceId: "",
     audioDeviceId: "",
     speakerDeviceId: "",
   });
   const [localStream, setLocalStream] = useState(null);
+  const lobbyRef = useRef(null);
+
+  function disposeLobby() {
+    lobbyRef.current?.destroy();
+    lobbyRef.current = null;
+  }
 
   const persistName = useCallback((name) => {
     setDisplayName(name);
@@ -36,12 +43,17 @@ export default function App() {
   }, []);
 
   function goToSetup(id, host) {
-    setIsHost(Boolean(host));
+    const asHost = Boolean(host);
+    setIsHost(asHost);
+    sessionStorage.setItem("isHost", asHost ? "1" : "0");
     setRoomInUrl(id);
+    disposeLobby();
+    if (asHost) lobbyRef.current = createHostLobby(id);
     setScreen("setup");
   }
 
   function goToLanding() {
+    disposeLobby();
     stopStream(localStream);
     setLocalStream(null);
     setScreen("landing");
@@ -53,6 +65,7 @@ export default function App() {
   }
 
   function leaveCall() {
+    disposeLobby();
     stopStream(localStream);
     setLocalStream(null);
     setScreen("landing");
@@ -78,6 +91,7 @@ export default function App() {
         roomId={roomId}
         isHost={isHost}
         localStream={localStream}
+        lobby={isHost ? lobbyRef.current : null}
         selectedDevices={selectedDevices}
         onSelectedDevices={setSelectedDevices}
         onLeave={leaveCall}

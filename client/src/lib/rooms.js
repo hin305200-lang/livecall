@@ -8,7 +8,7 @@ export function generateRoomId() {
   return id;
 }
 
-/** PeerJS id for a room. Unique enough on the public broker. */
+/** PeerJS ids are happiest as letters and numbers only. */
 export function peerIdForRoom(roomId) {
-  return `mysavings-${String(roomId || "").trim().toUpperCase()}`;
+  return `livecall${String(roomId || "").trim().toUpperCase()}`;
 }

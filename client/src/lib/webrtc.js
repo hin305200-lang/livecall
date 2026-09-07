@@ -9,7 +9,9 @@ const ICE_SERVERS = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
+    { urls: "stun:stun.cloudflare.com:3478" },
   ],
+  iceCandidatePoolSize: 10,
 };
 
 export function createPeerConnection({
@@ -31,24 +33,34 @@ export function createPeerConnection({
     if (event.candidate) onIceCandidate?.(event.candidate);
   };
 
+  const remote = new MediaStream();
   pc.ontrack = (event) => {
-    // Prefer the remote MediaStream when the browser provides one.
     if (event.streams && event.streams[0]) {
       onRemoteStream?.(event.streams[0]);
       return;
     }
-    onRemoteStream?.(new MediaStream([event.track]));
+    if (!remote.getTracks().includes(event.track)) remote.addTrack(event.track);
+    onRemoteStream?.(remote);
   };
 
   pc.onconnectionstatechange = () => {
     onConnectionStateChange?.(pc.connectionState);
   };
 
+  pc.oniceconnectionstatechange = () => {
+    const state = pc.iceConnectionState;
+    if (state === "connected" || state === "completed") {
+      onConnectionStateChange?.("connected");
+    } else if (state === "failed" || state === "disconnected") {
+      onConnectionStateChange?.(state);
+    }
+  };
+
   async function flushQueuedIce() {
     while (pendingIce.length) {
       const candidate = pendingIce.shift();
       try {
-        await pc.addIceCandidate(candidate);
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
       } catch (err) {
         console.warn("Failed to add ICE candidate", err);
       }
@@ -58,8 +70,12 @@ export function createPeerConnection({
   return {
     pc,
 
-    async createOffer() {
-      const offer = await pc.createOffer();
+    async createOffer({ iceRestart = false } = {}) {
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true,
+        iceRestart,
+      });
       await pc.setLocalDescription(offer);
       return pc.localDescription;
     },
@@ -73,6 +89,7 @@ export function createPeerConnection({
     },
 
     async handleAnswer(answer) {
+      if (pc.signalingState === "stable") return;
       await pc.setRemoteDescription(new RTCSessionDescription(answer));
       await flushQueuedIce();
     },
@@ -102,6 +119,7 @@ export function createPeerConnection({
       pc.onicecandidate = null;
       pc.ontrack = null;
       pc.onconnectionstatechange = null;
+      pc.oniceconnectionstatechange = null;
       try {
         pc.getSenders().forEach((s) => {
           try {

@@ -86,13 +86,15 @@ export default function DeviceSetup({
   }, []);
 
   async function onCamera(id) {
-    onSelectedDevices((prev) => ({ ...prev, videoDeviceId: id }));
-    await startPreview({ ...selectedDevices, videoDeviceId: id });
+    const next = { ...selectedDevices, videoDeviceId: id };
+    onSelectedDevices(next);
+    await startPreview(next);
   }
 
   async function onMic(id) {
-    onSelectedDevices((prev) => ({ ...prev, audioDeviceId: id }));
-    await startPreview({ ...selectedDevices, audioDeviceId: id });
+    const next = { ...selectedDevices, audioDeviceId: id };
+    onSelectedDevices(next);
+    await startPreview(next);
   }
 
   function joinCall() {
