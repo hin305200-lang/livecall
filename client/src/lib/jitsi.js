@@ -1,7 +1,9 @@
-const JITSI_SCRIPT = "https://meet.jit.si/external_api.js";
+// meet.jit.si now requires an 8x8 login to start a room, which blocks embeds.
+export const JITSI_DOMAIN = "meet.element.io";
+const JITSI_SCRIPT = `https://${JITSI_DOMAIN}/external_api.js`;
 
 export function jitsiRoomName(roomId) {
-  return `MySavingsLive${String(roomId || "").trim().toUpperCase()}`;
+  return `mysavingslive${String(roomId || "").trim().toLowerCase()}`;
 }
 
 export function loadJitsiApi() {

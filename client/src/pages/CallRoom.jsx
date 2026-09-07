@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import CallControls from "../components/CallControls.jsx";
 import ErrorBanner from "../components/ErrorBanner.jsx";
 import { CopyIcon, CheckIcon } from "../components/Icons.jsx";
-import { jitsiRoomName, loadJitsiApi } from "../lib/jitsi.js";
+import { JITSI_DOMAIN, jitsiRoomName, loadJitsiApi } from "../lib/jitsi.js";
 
 export default function CallRoom({
   displayName,
@@ -41,7 +41,7 @@ export default function CallRoom({
 
         const height = Math.max(window.innerHeight, mountRef.current.clientHeight || 0, 640);
 
-        api = new JitsiMeetExternalAPI("meet.jit.si", {
+        api = new JitsiMeetExternalAPI(JITSI_DOMAIN, {
           roomName: jitsiRoomName(roomId),
           parentNode: mountRef.current,
           width: "100%",
