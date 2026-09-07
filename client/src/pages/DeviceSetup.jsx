@@ -30,6 +30,12 @@ function withDeviceLabels(prev, listed, preferVirtual) {
   };
 }
 
+function cameraOptionLabel(device, index) {
+  const name = device.label || `Camera ${index + 1}`;
+  if (isObsCamera(device) || isVirtualCamera(device)) return `${name} (OBS)`;
+  return name;
+}
+
 export default function DeviceSetup({
   displayName,
   roomId,
@@ -50,8 +56,10 @@ export default function DeviceSetup({
   const pickedCameraRef = useRef(Boolean(selectedDevices.videoDeviceId));
   const selectedRef = useRef(selectedDevices);
   const canPickSpeaker = supportsSpeakerSelect();
-  const usingVirtual = isVirtualCamera({
-    label: selectedDevices.videoLabel || deviceLabel(devices.cameras, selectedDevices.videoDeviceId),
+  const usingVirtual = isObsCamera({
+    label: selectedDevices.videoLabel || stream?.getVideoTracks?.()[0]?.label || "",
+  }) || isVirtualCamera({
+    label: selectedDevices.videoLabel || stream?.getVideoTracks?.()[0]?.label || "",
   });
 
   selectedRef.current = selectedDevices;
@@ -85,7 +93,6 @@ export default function DeviceSetup({
       const media = await getLocalStream({
         ...nextIds,
         preferVirtual: isHost,
-        requireObs: isHost,
       });
       if (cancelledRef.current) {
         stopStream(media);
@@ -94,7 +101,9 @@ export default function DeviceSetup({
       const videoLabel = media.getVideoTracks()[0]?.label || nextIds.videoLabel || "";
       const audioLabel = media.getAudioTracks()[0]?.label || nextIds.audioLabel || "";
       const listed = await listDevices();
-      const matchedCamera = listed.cameras.find((d) => d.label && d.label === videoLabel);
+      const matchedCamera =
+        listed.cameras.find((d) => d.label && d.label === videoLabel) ||
+        listed.cameras.find((d) => d.deviceId && d.deviceId === media.getVideoTracks()[0]?.getSettings?.().deviceId);
       onSelectedDevices({
         ...nextIds,
         videoDeviceId: matchedCamera?.deviceId || nextIds.videoDeviceId || "",
@@ -158,13 +167,8 @@ export default function DeviceSetup({
   }
 
   function joinCall() {
-    const videoLabel = stream?.getVideoTracks()?.[0]?.label || selectedRef.current.videoLabel || "";
-    if (!stream) {
+    if (!stream?.getVideoTracks?.().length && !stream?.getAudioTracks?.().length) {
       setError("Turn on your camera or microphone before joining.");
-      return;
-    }
-    if (isHost && !isObsCamera({ label: videoLabel }) && !isVirtualCamera({ label: videoLabel })) {
-      setError("Start Virtual Camera in OBS, then choose OBS Virtual Camera. The other person will see that video.");
       return;
     }
     transferRef.current = true;
@@ -176,6 +180,11 @@ export default function DeviceSetup({
     onBack();
   }
 
+  const cameraOptions = devices.cameras.map((device, index) => ({
+    ...device,
+    label: cameraOptionLabel(device, index),
+  }));
+
   return (
     <main className="page setup">
       <header className="topbar">
@@ -184,10 +193,10 @@ export default function DeviceSetup({
         </button>
         <div>
           <p className="eyebrow">Room {roomId}</p>
-          <h1>{isHost ? "Choose OBS as your camera" : "Check your setup"}</h1>
+          <h1>{isHost ? "Choose your OBS camera" : "Check your setup"}</h1>
           <p className="hint">
             {isHost
-              ? "The other person will see this OBS scene, not your webcam."
+              ? "Allow camera access, then pick OBS from the Camera list. The other person will see that video."
               : "Then join the call. The meeting works on different Wi‑Fi, mobile data, and countries."}
           </p>
         </div>
@@ -217,14 +226,14 @@ export default function DeviceSetup({
             id="camera"
             label="Camera"
             value={selectedDevices.videoDeviceId}
-            options={devices.cameras}
+            options={cameraOptions}
             onChange={onCamera}
-            emptyLabel="No cameras found"
+            emptyLabel="Allow camera access to see cameras"
           />
           <p className="hint">
             {isHost
-              ? "In OBS click Start Virtual Camera, then choose OBS Virtual Camera. The other person will see this scene, not your laptop camera."
-              : "Using OBS? In OBS click Start Virtual Camera, then choose OBS Virtual Camera here."}
+              ? "If the preview is your webcam, open the Camera list and choose the OBS device. Virtual Camera can stay started in OBS."
+              : "Using OBS? Choose the OBS device in Camera after you allow access."}
           </p>
           <DeviceSelect
             id="mic"
@@ -254,12 +263,7 @@ export default function DeviceSetup({
             <p className="hint">This browser doesn’t support choosing an output device.</p>
           )}
 
-          <button
-            className="btn btn-primary"
-            type="button"
-            onClick={joinCall}
-            disabled={!stream || (isHost && !usingVirtual)}
-          >
+          <button className="btn btn-primary" type="button" onClick={joinCall} disabled={!stream}>
             Join call
             <ArrowIcon />
           </button>

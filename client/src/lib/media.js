@@ -7,16 +7,14 @@ export function classifyMediaError(err) {
       return "Camera or microphone access was denied. Allow permissions in your browser settings and try again.";
     case "NotFoundError":
     case "DevicesNotFoundError":
-      return "No camera or microphone was found. Plug in a device, or start OBS Virtual Camera, and try again.";
+      return "No camera or microphone was found. Allow camera access in the browser, then pick OBS from the Camera list.";
     case "NotReadableError":
     case "TrackStartError":
-      return "That camera is already in use. If you are using OBS, start Virtual Camera in OBS and pick OBS Virtual Camera here.";
+      return "That camera is busy. Pick OBS Virtual Camera in the Camera list — not the laptop webcam OBS is already using.";
     case "OverconstrainedError":
-      return "The selected device isn’t available. Pick OBS Virtual Camera or another camera.";
+      return "The selected camera isn’t available. Pick another camera from the list.";
     case "SecurityError":
       return "This browser blocked media access. Use HTTPS or localhost.";
-    case "ObsCameraMissing":
-      return err?.message || "Start Virtual Camera in OBS, then choose OBS Virtual Camera.";
     default:
       return err?.message || "Could not access your camera or microphone.";
   }
@@ -32,16 +30,37 @@ export function supportsSpeakerSelect() {
 }
 
 export function isObsCamera(device) {
-  return /\bobs\b/i.test(`${device?.label || ""}`);
+  return /obs/i.test(`${device?.label || ""}`);
 }
 
 export function isVirtualCamera(device) {
   const label = `${device?.label || ""}`.toLowerCase();
-  return /obs|virtual camera|virtual cam|\bvcam\b|unity capture|streamlabs|mmhmm|snap camera|ecamm|manycam|prism|ndi|elgato|camo/.test(label);
+  return /obs|virtual\s*cam|vcam|unity capture|streamlabs|mmhmm|snap camera|ecamm|manycam|prism|ndi|elgato|camo|dummy|loopback|capture card/.test(label);
+}
+
+export function isBuiltinCamera(device) {
+  const label = `${device?.label || ""}`.toLowerCase();
+  return /facetime|built-?in|integrated|continuity|iphone|ipad|desk view/.test(label);
 }
 
 export function findObsCamera(cameras = []) {
-  return cameras.find(isObsCamera) || cameras.find(isVirtualCamera) || null;
+  return (
+    cameras.find(isObsCamera) ||
+    cameras.find(isVirtualCamera) ||
+    cameras.find((device) => device.label && !isBuiltinCamera(device) && cameras.some(isBuiltinCamera)) ||
+    null
+  );
+}
+
+export function sortCameras(cameras = []) {
+  return [...cameras].sort((a, b) => scoreCamera(a) - scoreCamera(b));
+}
+
+function scoreCamera(device) {
+  if (isObsCamera(device)) return 0;
+  if (isVirtualCamera(device)) return 1;
+  if (!isBuiltinCamera(device) && device.label) return 2;
+  return 3;
 }
 
 export function pickDefaultCamera(cameras, preferVirtual = false) {
@@ -60,7 +79,7 @@ export function deviceLabel(devices, deviceId) {
 export async function listDevices() {
   const devices = await navigator.mediaDevices.enumerateDevices();
   return {
-    cameras: devices.filter((d) => d.kind === "videoinput"),
+    cameras: sortCameras(devices.filter((d) => d.kind === "videoinput")),
     mics: devices.filter((d) => d.kind === "audioinput"),
     speakers: devices.filter((d) => d.kind === "audiooutput"),
   };
@@ -68,15 +87,28 @@ export async function listDevices() {
 
 function audioConstraints(deviceId) {
   const base = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
-  return deviceId ? { ...base, deviceId: { exact: deviceId } } : base;
+  return deviceId ? { ...base, deviceId: { ideal: deviceId } } : base;
 }
 
 function videoAttempts(deviceId) {
   if (!deviceId) return [true];
-  return [
-    { deviceId: { exact: deviceId } },
-    { deviceId: { exact: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } },
-  ];
+  return [{ deviceId: { ideal: deviceId } }, { deviceId: { exact: deviceId } }, true];
+}
+
+async function gum(video, audioDeviceId) {
+  return navigator.mediaDevices.getUserMedia({
+    video,
+    audio: audioConstraints(audioDeviceId),
+  });
+}
+
+function currentVideo(stream) {
+  const track = stream?.getVideoTracks?.()[0];
+  return {
+    track,
+    label: track?.label || "",
+    deviceId: track?.getSettings?.().deviceId || "",
+  };
 }
 
 function cameraOrder(cameras, videoDeviceId, preferVirtual) {
@@ -85,78 +117,75 @@ function cameraOrder(cameras, videoDeviceId, preferVirtual) {
     if (device && !ordered.some((d) => d.deviceId === device.deviceId)) ordered.push(device);
   };
 
-  add(cameras.find((d) => d.deviceId === videoDeviceId));
-  if (preferVirtual || isVirtualCamera({ label: cameras.find((d) => d.deviceId === videoDeviceId)?.label })) {
-    cameras.filter(isVirtualCamera).forEach(add);
-  }
+  add(cameras.find((d) => d.deviceId && d.deviceId === videoDeviceId));
+  if (preferVirtual) add(findObsCamera(cameras));
   cameras.forEach(add);
   return ordered;
 }
 
 /**
- * Request a local MediaStream, falling back across cameras (including OBS)
- * then audio-only if needed.
+ * Open a camera, preferring OBS / virtual cameras when asked.
+ * Always requests permission first so the browser reveals device names.
  */
 export async function getLocalStream({
   videoDeviceId,
   audioDeviceId,
   preferVirtual = false,
-  requireObs = false,
 } = {}) {
-  const listed = await listDevices().catch(() => ({ cameras: [] }));
-  let cameras = cameraOrder(listed.cameras, videoDeviceId, preferVirtual || requireObs);
-  if (requireObs) {
-    cameras = cameras.filter((device) => isObsCamera(device) || isVirtualCamera(device));
-    if (!cameras.length) {
-      const err = new Error(
-        "Start Virtual Camera in OBS, then choose OBS Virtual Camera. The other person will see that video.",
-      );
-      err.name = "ObsCameraMissing";
-      throw err;
-    }
-  }
+  let stream = null;
   let lastErr;
 
-  const tryVideo = async (video) =>
-    navigator.mediaDevices.getUserMedia({
-      video,
-      audio: audioConstraints(audioDeviceId),
-    });
+  const tryOpen = async (video) => {
+    try {
+      return await gum(video, audioDeviceId);
+    } catch (err) {
+      lastErr = err;
+      if (err?.name === "NotAllowedError" || err?.name === "PermissionDeniedError") throw err;
+      return null;
+    }
+  };
 
-  for (const camera of cameras) {
-    for (const video of videoAttempts(camera.deviceId)) {
-      try {
-        return await tryVideo(video);
-      } catch (err) {
-        lastErr = err;
-        if (err?.name === "NotAllowedError" || err?.name === "PermissionDeniedError") throw err;
+  if (videoDeviceId) {
+    for (const video of videoAttempts(videoDeviceId)) {
+      stream = await tryOpen(video);
+      if (stream) break;
+    }
+  }
+
+  if (!stream) stream = await tryOpen(true);
+
+  if (!stream) {
+    const listed = await listDevices().catch(() => ({ cameras: [] }));
+    for (const camera of listed.cameras) {
+      if (!camera.deviceId) continue;
+      stream = await tryOpen({ deviceId: { ideal: camera.deviceId } });
+      if (stream) break;
+    }
+  }
+
+  if (!stream) {
+    throw lastErr || new Error("Could not access your camera or microphone.");
+  }
+
+  const listed = await listDevices().catch(() => ({ cameras: [] }));
+  const wanted = cameraOrder(listed.cameras, videoDeviceId, preferVirtual)[0];
+  const active = currentVideo(stream);
+  const alreadyWanted =
+    wanted &&
+    ((wanted.deviceId && active.deviceId && wanted.deviceId === active.deviceId) ||
+      (wanted.label && active.label && wanted.label === active.label));
+
+  if (wanted?.deviceId && !alreadyWanted) {
+    for (const video of videoAttempts(wanted.deviceId)) {
+      const next = await tryOpen(video);
+      if (next) {
+        stopStream(stream);
+        return next;
       }
     }
   }
 
-  if (!cameras.length) {
-    try {
-      return await tryVideo(true);
-    } catch (err) {
-      lastErr = err;
-      if (err?.name === "NotAllowedError" || err?.name === "PermissionDeniedError") throw err;
-    }
-  }
-
-  if (requireObs) {
-    throw lastErr || new Error(
-      "Could not open OBS Virtual Camera. In OBS click Start Virtual Camera, then try again.",
-    );
-  }
-
-  try {
-    return await navigator.mediaDevices.getUserMedia({
-      video: false,
-      audio: audioConstraints(audioDeviceId),
-    });
-  } catch {
-    throw lastErr || new Error("Could not access your camera or microphone.");
-  }
+  return stream;
 }
 
 /**

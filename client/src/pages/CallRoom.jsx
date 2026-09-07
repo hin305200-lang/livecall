@@ -6,7 +6,6 @@ import VideoTile from "../components/VideoTile.jsx";
 import { CopyIcon, CheckIcon } from "../components/Icons.jsx";
 import { createTracksFromStream, joinJitsiRoom } from "../lib/jitsi.js";
 import {
-  findObsCamera,
   getLocalStream,
   isObsCamera,
   isVirtualCamera,
@@ -70,15 +69,7 @@ export default function CallRoom({
     async function start() {
       try {
         if (!localStream) {
-          throw new Error("Camera was not started. Go back and choose OBS Virtual Camera.");
-        }
-        if (isHost) {
-          const label = localStream?.getVideoTracks?.()[0]?.label || "";
-          if (!isObsCamera({ label }) && !isVirtualCamera({ label })) {
-            throw new Error(
-              "OBS is not the camera. In OBS click Start Virtual Camera, then choose OBS Virtual Camera before joining.",
-            );
-          }
+          throw new Error("Camera was not started. Go back and choose a camera.");
         }
 
         const session = await joinJitsiRoom({
@@ -153,14 +144,6 @@ export default function CallRoom({
     const listed = await listDevices();
     setCallDevices(listed);
 
-    if (isHost && kind === "video") {
-      const camera = listed.cameras.find((d) => d.deviceId === deviceId);
-      if (camera && !isObsCamera(camera) && !isVirtualCamera(camera)) {
-        setError("Pick OBS Virtual Camera so the other person sees OBS, not your webcam.");
-        return;
-      }
-    }
-
     const nextIds = {
       ...selectedDevices,
       ...(kind === "video" ? { videoDeviceId: deviceId } : {}),
@@ -172,7 +155,6 @@ export default function CallRoom({
     const nextStream = await getLocalStream({
       ...nextIds,
       preferVirtual: isHost,
-      requireObs: isHost && kind === "video",
     });
     const newTracks = await createTracksFromStream(session.JitsiMeetJS, nextStream, nextIds);
     const old = localTrack(kind);
@@ -213,7 +195,6 @@ export default function CallRoom({
   }
 
   const cameraOptions = callDevices.cameras;
-  const obsReady = findObsCamera(callDevices.cameras) || sendingObs;
 
   return (
     <main className="page call">
@@ -278,7 +259,7 @@ export default function CallRoom({
             value={selectedDevices.videoDeviceId}
             options={cameraOptions.length ? cameraOptions : callDevices.cameras}
             onChange={(id) => changeCallDevice("video", id)}
-            emptyLabel={isHost && !obsReady ? "Start OBS Virtual Camera" : "No cameras found"}
+            emptyLabel="No cameras found"
           />
           <p className="hint">
             {isHost
