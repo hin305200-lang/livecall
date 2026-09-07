@@ -1,5 +1,5 @@
 import Peer from "peerjs";
-import { defaultRtcConfig } from "./ice.js";
+import { PEER_ICE_CONFIG } from "./ice.js";
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -7,14 +7,14 @@ function delay(ms) {
 
 /**
  * Create a PeerJS peer and return it immediately so callers can attach
- * `connection` listeners before the id is claimed.
+ * `call` listeners before the id is claimed.
  */
 export function openPeer(id) {
-    const peer = new Peer(id || undefined, {
-      debug: 0,
-      secure: true,
-      config: defaultRtcConfig(),
-    });
+  const peer = new Peer(id || undefined, {
+    debug: 0,
+    secure: true,
+    config: PEER_ICE_CONFIG,
+  });
 
   const ready = new Promise((resolve, reject) => {
     let settled = false;
@@ -48,7 +48,6 @@ export async function createPeer(id) {
   return ready;
 }
 
-/** Host room IDs can stay claimed for a few seconds after a refresh. */
 export async function createPeerRetry(id, attempts = 8) {
   let lastErr;
   for (let i = 0; i < attempts; i += 1) {

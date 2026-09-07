@@ -38,17 +38,7 @@ npm run build --prefix client
 
 ### NAT traversal (STUN vs TURN)
 
-Calls try a **direct** path first (STUN). If the two devices are on different Wi‑Fi, mobile data, or countries, media is **relayed** through TURN so the call can still connect.
-
-Built-in relays:
-
-- `turn:eu-0.turn.peerjs.com:3478` (UDP + TCP)
-- `turn:us-0.turn.peerjs.com:3478` (UDP + TCP)
-
-Optional extra TURN (baked in at build time):
-
-- `VITE_ICE_URL` — URL that returns `{ iceServers: [...] }`
-- `VITE_METERED_DOMAIN` + `VITE_METERED_API_KEY` — [Metered](https://www.metered.ca/stun-turn/) credential API
+Calls send **signaling** through the PeerJS broker (WebSocket), then send **video** peer-to-peer. If a direct path is blocked (different Wi‑Fi, mobile data, or country), media is **relayed** through PeerJS TURN servers in the US and EU.
 
 ## Project layout
 

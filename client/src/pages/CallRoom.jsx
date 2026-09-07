@@ -153,7 +153,7 @@ export default function CallRoom({
             <VideoTile
               stream={remoteStream}
               speakerId={selectedDevices.speakerDeviceId}
-              label={peerName || (connecting ? "Connecting…" : "Guest")}
+              label={peerName || (isHost ? "Guest" : "Host")}
               className="stage-remote"
               overlay={
                 !remoteStream
@@ -179,7 +179,7 @@ export default function CallRoom({
         <div className="wait-card">
           <p className="eyebrow">Waiting for the other person</p>
           <h2 className="mono room-code">{roomId}</h2>
-          <p className="hint">Share this code and stay on this screen. The other person can join as soon as you created the room.</p>
+          <p className="hint">Share this code. The other person can join from a different Wi‑Fi, phone data, or country — stay on this screen.</p>
           <button type="button" className="btn btn-secondary" onClick={copyLink}>
             {copied ? <CheckIcon /> : <CopyIcon />}
             {copied ? "Copied" : "Copy invite link"}

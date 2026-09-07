@@ -121,6 +121,7 @@ export default function DeviceSetup({
         <div>
           <p className="eyebrow">Room {roomId}</p>
           <h1>Check your setup</h1>
+          <p className="hint">Then join the call and stay on that screen so the other person can connect.</p>
         </div>
       </header>
 

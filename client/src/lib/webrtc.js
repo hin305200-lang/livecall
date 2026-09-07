@@ -4,7 +4,7 @@
  * Direct (STUN) paths are tried first. TURN relays are used when the
  * two devices cannot reach each other across NATs, firewalls, or countries.
  */
-import { defaultRtcConfig } from "./ice.js";
+import { PEER_ICE_CONFIG } from "./ice.js";
 
 export function createPeerConnection({
   localStream,
@@ -13,7 +13,7 @@ export function createPeerConnection({
   onIceCandidate,
   onConnectionStateChange,
 }) {
-  const pc = new RTCPeerConnection(rtcConfig || defaultRtcConfig());
+  const pc = new RTCPeerConnection(rtcConfig || PEER_ICE_CONFIG);
   const pendingIce = [];
 
   if (localStream) {

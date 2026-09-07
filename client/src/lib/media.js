@@ -39,7 +39,12 @@ export async function listDevices() {
 }
 
 function videoConstraints(deviceId) {
-  const base = { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" };
+  const base = {
+    width: { ideal: 640 },
+    height: { ideal: 480 },
+    frameRate: { ideal: 24 },
+    facingMode: "user",
+  };
   return deviceId ? { ...base, deviceId: { exact: deviceId }, facingMode: undefined } : base;
 }
 
