@@ -1,8 +1,34 @@
 import { useEffect, useRef, useState } from "react";
 import CallControls from "../components/CallControls.jsx";
+import DeviceSelect from "../components/DeviceSelect.jsx";
 import ErrorBanner from "../components/ErrorBanner.jsx";
 import { CopyIcon, CheckIcon } from "../components/Icons.jsx";
 import { JITSI_DOMAIN, jitsiRoomName, loadJitsiApi } from "../lib/jitsi.js";
+import { isVirtualCamera } from "../lib/media.js";
+
+function pickJitsiDevice(list, deviceId, label) {
+  return (
+    list.find((d) => d.deviceId && d.deviceId === deviceId) ||
+    list.find((d) => d.label && label && d.label === label) ||
+    null
+  );
+}
+
+async function setJitsiDevice(api, kind, device) {
+  if (!device) return;
+  const setter =
+    kind === "video"
+      ? api.setVideoInputDevice
+      : kind === "audio"
+        ? api.setAudioInputDevice
+        : api.setAudioOutputDevice;
+  if (!setter) return;
+  try {
+    await setter.call(api, device.deviceId || device.label);
+  } catch {
+    if (device.label) await setter.call(api, device.label);
+  }
+}
 
 export default function CallRoom({
   displayName,
@@ -16,18 +42,70 @@ export default function CallRoom({
   const [copied, setCopied] = useState(false);
   const [participantCount, setParticipantCount] = useState(1);
   const [joined, setJoined] = useState(false);
+  const [showDevices, setShowDevices] = useState(false);
+  const [callDevices, setCallDevices] = useState({ cameras: [], mics: [], speakers: [] });
+  const [activeDevices, setActiveDevices] = useState({
+    videoDeviceId: selectedDevices.videoDeviceId || "",
+    audioDeviceId: selectedDevices.audioDeviceId || "",
+    speakerDeviceId: selectedDevices.speakerDeviceId || "",
+  });
 
   const mountRef = useRef(null);
   const apiRef = useRef(null);
   const leftRef = useRef(false);
   const joinedRef = useRef(false);
+  const selectedRef = useRef(selectedDevices);
   const shareUrl = `${window.location.origin}/?room=${roomId}`;
   const waiting = joined && participantCount < 2;
+
+  selectedRef.current = selectedDevices;
 
   function leaveOnce() {
     if (leftRef.current) return;
     leftRef.current = true;
     onLeave();
+  }
+
+  async function syncCallDevices(api) {
+    try {
+      const available = await api.getAvailableDevices();
+      setCallDevices({
+        cameras: available?.videoInput || [],
+        mics: available?.audioInput || [],
+        speakers: available?.audioOutput || [],
+      });
+      return available;
+    } catch {
+      return null;
+    }
+  }
+
+  async function applySelectedDevices(api, selected = selectedRef.current) {
+    const available = (await syncCallDevices(api)) || {};
+    const video =
+      pickJitsiDevice(available.videoInput || [], selected.videoDeviceId, selected.videoLabel) ||
+      (isVirtualCamera({ label: selected.videoLabel })
+        ? (available.videoInput || []).find(isVirtualCamera)
+        : null);
+    const audio = pickJitsiDevice(available.audioInput || [], selected.audioDeviceId, selected.audioLabel);
+    const speaker = pickJitsiDevice(available.audioOutput || [], selected.speakerDeviceId, selected.speakerLabel);
+
+    await setJitsiDevice(api, "video", video || (selected.videoLabel ? { label: selected.videoLabel } : null));
+    await setJitsiDevice(api, "audio", audio || (selected.audioLabel ? { label: selected.audioLabel } : null));
+    await setJitsiDevice(api, "speaker", speaker || (selected.speakerLabel ? { label: selected.speakerLabel } : null));
+
+    setActiveDevices({
+      videoDeviceId: video?.deviceId || selected.videoDeviceId || "",
+      audioDeviceId: audio?.deviceId || selected.audioDeviceId || "",
+      speakerDeviceId: speaker?.deviceId || selected.speakerDeviceId || "",
+    });
+
+    try {
+      const muted = await api.isVideoMuted?.();
+      if (muted) api.executeCommand("toggleVideo");
+    } catch {
+      /* ignore */
+    }
   }
 
   useEffect(() => {
@@ -40,6 +118,7 @@ export default function CallRoom({
         if (cancelled || !mountRef.current) return;
 
         const height = Math.max(window.innerHeight, mountRef.current.clientHeight || 0, 640);
+        const selected = selectedRef.current;
 
         api = new JitsiMeetExternalAPI(JITSI_DOMAIN, {
           roomName: jitsiRoomName(roomId),
@@ -48,6 +127,11 @@ export default function CallRoom({
           height,
           lang: "en",
           userInfo: { displayName: displayName || "Guest" },
+          devices: {
+            ...(selected.videoLabel ? { videoInput: selected.videoLabel } : {}),
+            ...(selected.audioLabel ? { audioInput: selected.audioLabel } : {}),
+            ...(selected.speakerLabel ? { audioOutput: selected.speakerLabel } : {}),
+          },
           configOverwrite: {
             prejoinConfig: { enabled: false },
             disableInitialGUM: false,
@@ -56,11 +140,14 @@ export default function CallRoom({
             startWithVideoMuted: false,
             disableInviteFunctions: true,
             hideConferenceSubject: true,
+            disableLocalVideoFlip: true,
+            resolution: 1080,
             toolbarButtons: ["microphone", "camera", "hangup", "settings", "tileview"],
             p2p: { enabled: false },
             constraints: {
               video: {
-                height: { ideal: 720, max: 720, min: 180 },
+                height: { ideal: 1080 },
+                width: { ideal: 1920 },
               },
             },
           },
@@ -69,6 +156,7 @@ export default function CallRoom({
             SHOW_BRAND_WATERMARK: false,
             DEFAULT_BACKGROUND: "#0c0c0b",
             DISABLE_JOIN_LEAVE_NOTIFICATIONS: true,
+            VERTICAL_FILMSTRIP: true,
           },
         });
 
@@ -104,19 +192,16 @@ export default function CallRoom({
           setJoined(true);
           setError("");
           syncCount();
-          try {
-            if (selectedDevices.videoDeviceId) {
-              await api.setVideoInputDevice(selectedDevices.videoDeviceId);
-            }
-            if (selectedDevices.audioDeviceId) {
-              await api.setAudioInputDevice(selectedDevices.audioDeviceId);
-            }
-            if (selectedDevices.speakerDeviceId) {
-              await api.setAudioOutputDevice?.(selectedDevices.speakerDeviceId);
-            }
-          } catch (err) {
-            console.warn("Could not select devices", err);
-          }
+          await applySelectedDevices(api);
+        });
+        api.addListener("deviceListChanged", async () => {
+          const available = await syncCallDevices(api);
+          const selected = selectedRef.current;
+          if (!isVirtualCamera({ label: selected.videoLabel })) return;
+          const video =
+            pickJitsiDevice(available?.videoInput || [], selected.videoDeviceId, selected.videoLabel) ||
+            (available?.videoInput || []).find(isVirtualCamera);
+          if (video) await setJitsiDevice(api, "video", video);
         });
         api.addListener("participantJoined", syncCount);
         api.addListener("participantLeft", syncCount);
@@ -151,6 +236,22 @@ export default function CallRoom({
 
   function toggleCam() {
     apiRef.current?.executeCommand("toggleVideo");
+  }
+
+  async function changeCallDevice(kind, deviceId) {
+    const api = apiRef.current;
+    if (!api) return;
+    const list = kind === "video" ? callDevices.cameras : kind === "audio" ? callDevices.mics : callDevices.speakers;
+    const device = list.find((d) => d.deviceId === deviceId);
+    await setJitsiDevice(api, kind, device || { deviceId });
+    setActiveDevices((prev) => ({
+      ...prev,
+      ...(kind === "video"
+        ? { videoDeviceId: deviceId }
+        : kind === "audio"
+          ? { audioDeviceId: deviceId }
+          : { speakerDeviceId: deviceId }),
+    }));
   }
 
   async function copyLink() {
@@ -201,12 +302,53 @@ export default function CallRoom({
         )}
       </div>
 
+      {showDevices && (
+        <div className="card stack device-sheet">
+          <div className="sheet-head">
+            <p className="eyebrow">Camera & mic</p>
+            <button type="button" className="text-btn" onClick={() => setShowDevices(false)}>
+              Close
+            </button>
+          </div>
+          <DeviceSelect
+            id="call-camera"
+            label="Camera"
+            value={activeDevices.videoDeviceId}
+            options={callDevices.cameras}
+            onChange={(id) => changeCallDevice("video", id)}
+            emptyLabel="No cameras found"
+          />
+          <p className="hint">OBS: start Virtual Camera in OBS, then pick OBS Virtual Camera.</p>
+          <DeviceSelect
+            id="call-mic"
+            label="Microphone"
+            value={activeDevices.audioDeviceId}
+            options={callDevices.mics}
+            onChange={(id) => changeCallDevice("audio", id)}
+            emptyLabel="No microphones found"
+          />
+          {callDevices.speakers.length > 0 && (
+            <DeviceSelect
+              id="call-speaker"
+              label="Speakers"
+              value={activeDevices.speakerDeviceId}
+              options={callDevices.speakers}
+              onChange={(id) => changeCallDevice("speaker", id)}
+              emptyLabel="No speakers found"
+            />
+          )}
+        </div>
+      )}
+
       <CallControls
         micOn={micOn}
         camOn={camOn}
         onToggleMic={toggleMic}
         onToggleCam={toggleCam}
-        onOpenDevices={() => apiRef.current?.executeCommand("toggleTileView")}
+        onOpenDevices={() => {
+          setShowDevices((open) => !open);
+          if (apiRef.current) syncCallDevices(apiRef.current);
+        }}
         onEnd={endCall}
       />
     </main>

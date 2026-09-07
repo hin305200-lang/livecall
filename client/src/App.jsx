@@ -61,6 +61,7 @@ export default function App() {
       <DeviceSetup
         displayName={displayName}
         roomId={roomId}
+        isHost={isHost}
         selectedDevices={selectedDevices}
         onSelectedDevices={setSelectedDevices}
         onBack={goToLanding}

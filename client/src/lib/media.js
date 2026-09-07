@@ -7,12 +7,12 @@ export function classifyMediaError(err) {
       return "Camera or microphone access was denied. Allow permissions in your browser settings and try again.";
     case "NotFoundError":
     case "DevicesNotFoundError":
-      return "No camera or microphone was found. Plug in a device and try again.";
+      return "No camera or microphone was found. Plug in a device, or start OBS Virtual Camera, and try again.";
     case "NotReadableError":
     case "TrackStartError":
-      return "Your camera or microphone is already in use by another application.";
+      return "That camera is already in use. If you are using OBS, start Virtual Camera in OBS and pick OBS Virtual Camera here.";
     case "OverconstrainedError":
-      return "The selected device isn’t available. Pick a different camera or microphone.";
+      return "The selected device isn’t available. Pick OBS Virtual Camera or another camera.";
     case "SecurityError":
       return "This browser blocked media access. Use HTTPS or localhost.";
     default:
@@ -29,6 +29,24 @@ export function supportsSpeakerSelect() {
   return typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype;
 }
 
+export function isVirtualCamera(device) {
+  const label = `${device?.label || ""}`.toLowerCase();
+  return /obs|virtual camera|virtual cam|\bvcam\b|unity capture|streamlabs|mmhmm|snap camera|ecamm|manycam|prism|ndi|elgato|camo/.test(label);
+}
+
+export function pickDefaultCamera(cameras, preferVirtual = false) {
+  if (!cameras?.length) return "";
+  if (preferVirtual) {
+    const virtual = cameras.find(isVirtualCamera);
+    if (virtual) return virtual.deviceId;
+  }
+  return cameras[0].deviceId;
+}
+
+export function deviceLabel(devices, deviceId) {
+  return devices.find((d) => d.deviceId === deviceId)?.label || "";
+}
+
 export async function listDevices() {
   const devices = await navigator.mediaDevices.enumerateDevices();
   return {
@@ -38,42 +56,79 @@ export async function listDevices() {
   };
 }
 
-function videoConstraints(deviceId) {
-  const base = {
-    width: { ideal: 640 },
-    height: { ideal: 480 },
-    frameRate: { ideal: 24 },
-    facingMode: "user",
-  };
-  return deviceId ? { ...base, deviceId: { exact: deviceId }, facingMode: undefined } : base;
-}
-
 function audioConstraints(deviceId) {
   const base = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
   return deviceId ? { ...base, deviceId: { exact: deviceId } } : base;
 }
 
+function videoAttempts(deviceId) {
+  if (!deviceId) return [true];
+  return [
+    { deviceId: { exact: deviceId } },
+    { deviceId: { exact: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+  ];
+}
+
+function cameraOrder(cameras, videoDeviceId, preferVirtual) {
+  const ordered = [];
+  const add = (device) => {
+    if (device && !ordered.some((d) => d.deviceId === device.deviceId)) ordered.push(device);
+  };
+
+  add(cameras.find((d) => d.deviceId === videoDeviceId));
+  if (preferVirtual || isVirtualCamera({ label: cameras.find((d) => d.deviceId === videoDeviceId)?.label })) {
+    cameras.filter(isVirtualCamera).forEach(add);
+  }
+  cameras.forEach(add);
+  return ordered;
+}
+
 /**
- * Request a local MediaStream, falling back to audio-only if the camera fails.
+ * Request a local MediaStream, falling back across cameras (including OBS)
+ * then audio-only if needed.
  */
-export async function getLocalStream({ videoDeviceId, audioDeviceId } = {}) {
-  try {
-    return await navigator.mediaDevices.getUserMedia({
-      video: videoConstraints(videoDeviceId),
+export async function getLocalStream({
+  videoDeviceId,
+  audioDeviceId,
+  preferVirtual = false,
+} = {}) {
+  const listed = await listDevices().catch(() => ({ cameras: [] }));
+  const cameras = cameraOrder(listed.cameras, videoDeviceId, preferVirtual);
+  let lastErr;
+
+  const tryVideo = async (video) =>
+    navigator.mediaDevices.getUserMedia({
+      video,
       audio: audioConstraints(audioDeviceId),
     });
-  } catch (err) {
-    if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
-      throw err;
+
+  for (const camera of cameras) {
+    for (const video of videoAttempts(camera.deviceId)) {
+      try {
+        return await tryVideo(video);
+      } catch (err) {
+        lastErr = err;
+        if (err?.name === "NotAllowedError" || err?.name === "PermissionDeniedError") throw err;
+      }
     }
+  }
+
+  if (!cameras.length) {
     try {
-      return await navigator.mediaDevices.getUserMedia({
-        video: false,
-        audio: audioConstraints(audioDeviceId),
-      });
-    } catch {
-      throw err;
+      return await tryVideo(true);
+    } catch (err) {
+      lastErr = err;
+      if (err?.name === "NotAllowedError" || err?.name === "PermissionDeniedError") throw err;
     }
+  }
+
+  try {
+    return await navigator.mediaDevices.getUserMedia({
+      video: false,
+      audio: audioConstraints(audioDeviceId),
+    });
+  } catch {
+    throw lastErr || new Error("Could not access your camera or microphone.");
   }
 }
 
@@ -85,7 +140,7 @@ export async function getLocalStream({ videoDeviceId, audioDeviceId } = {}) {
 export async function switchDevice(stream, kind, deviceId) {
   const constraints =
     kind === "video"
-      ? { video: videoConstraints(deviceId), audio: false }
+      ? { video: videoAttempts(deviceId)[0], audio: false }
       : { video: false, audio: audioConstraints(deviceId) };
 
   const next = await navigator.mediaDevices.getUserMedia(constraints);

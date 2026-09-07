@@ -344,6 +344,11 @@ button.video-overlay {
   min-height: 280px;
 }
 
+.video-tile.is-contain video {
+  object-fit: contain;
+  background: #050505;
+}
+
 .call {
   padding: 0;
   height: 100dvh;

@@ -5,15 +5,33 @@ import ErrorBanner from "../components/ErrorBanner.jsx";
 import { ArrowIcon } from "../components/Icons.jsx";
 import {
   classifyMediaError,
+  deviceLabel,
   getLocalStream,
+  isVirtualCamera,
   listDevices,
+  pickDefaultCamera,
   stopStream,
   supportsSpeakerSelect,
 } from "../lib/media.js";
 
+function withDeviceLabels(prev, listed, preferVirtual) {
+  const videoDeviceId = prev.videoDeviceId || pickDefaultCamera(listed.cameras, preferVirtual);
+  const audioDeviceId = prev.audioDeviceId || listed.mics[0]?.deviceId || "";
+  const speakerDeviceId = prev.speakerDeviceId || listed.speakers[0]?.deviceId || "";
+  return {
+    videoDeviceId,
+    videoLabel: deviceLabel(listed.cameras, videoDeviceId) || prev.videoLabel || "",
+    audioDeviceId,
+    audioLabel: deviceLabel(listed.mics, audioDeviceId) || prev.audioLabel || "",
+    speakerDeviceId,
+    speakerLabel: deviceLabel(listed.speakers, speakerDeviceId) || prev.speakerLabel || "",
+  };
+}
+
 export default function DeviceSetup({
   displayName,
   roomId,
+  isHost,
   selectedDevices,
   onSelectedDevices,
   onPreviewStream,
@@ -27,38 +45,63 @@ export default function DeviceSetup({
   const streamRef = useRef(null);
   const transferRef = useRef(false);
   const cancelledRef = useRef(false);
+  const pickedCameraRef = useRef(Boolean(selectedDevices.videoDeviceId));
+  const selectedRef = useRef(selectedDevices);
   const canPickSpeaker = supportsSpeakerSelect();
+  const usingVirtual = isVirtualCamera({
+    label: selectedDevices.videoLabel || deviceLabel(devices.cameras, selectedDevices.videoDeviceId),
+  });
 
-  async function refreshDevices() {
+  selectedRef.current = selectedDevices;
+
+  async function refreshDevices(opts = {}) {
     try {
       const listed = await listDevices();
       setDevices(listed);
-      onSelectedDevices((prev) => ({
-        videoDeviceId: prev.videoDeviceId || listed.cameras[0]?.deviceId || "",
-        audioDeviceId: prev.audioDeviceId || listed.mics[0]?.deviceId || "",
-        speakerDeviceId: prev.speakerDeviceId || listed.speakers[0]?.deviceId || "",
-      }));
+
+      const obs = listed.cameras.find(isVirtualCamera);
+      const prev = selectedRef.current;
+      const shouldTakeObs = Boolean(isHost && obs && !pickedCameraRef.current && prev.videoDeviceId !== obs.deviceId);
+      const next = withDeviceLabels(
+        shouldTakeObs ? { ...prev, videoDeviceId: obs.deviceId, videoLabel: obs.label } : prev,
+        listed,
+        isHost,
+      );
+      onSelectedDevices(next);
+      if (shouldTakeObs && opts.previewObs) {
+        await startPreview(next);
+      }
     } catch (err) {
       setError(classifyMediaError(err));
     }
   }
 
-  async function startPreview(nextIds = selectedDevices) {
+  async function startPreview(nextIds = selectedRef.current) {
     setLoading(true);
     setError("");
     try {
-      const media = await getLocalStream(nextIds);
+      const media = await getLocalStream({ ...nextIds, preferVirtual: isHost });
       if (cancelledRef.current) {
         stopStream(media);
         return;
       }
+      const videoLabel = media.getVideoTracks()[0]?.label || nextIds.videoLabel || "";
+      const audioLabel = media.getAudioTracks()[0]?.label || nextIds.audioLabel || "";
+      const listed = await listDevices();
+      const matchedCamera = listed.cameras.find((d) => d.label && d.label === videoLabel);
+      onSelectedDevices({
+        ...nextIds,
+        videoDeviceId: matchedCamera?.deviceId || nextIds.videoDeviceId || "",
+        videoLabel: videoLabel || matchedCamera?.label || "",
+        audioLabel,
+      });
+      setDevices(listed);
       setStream((prev) => {
         stopStream(prev);
         streamRef.current = media;
         return media;
       });
       onPreviewStream?.(media);
-      await refreshDevices();
     } catch (err) {
       if (!cancelledRef.current) {
         setStream((prev) => {
@@ -76,7 +119,7 @@ export default function DeviceSetup({
   useEffect(() => {
     cancelledRef.current = false;
     startPreview();
-    const onChange = () => refreshDevices();
+    const onChange = () => refreshDevices({ previewObs: true });
     navigator.mediaDevices?.addEventListener?.("devicechange", onChange);
     return () => {
       cancelledRef.current = true;
@@ -88,13 +131,22 @@ export default function DeviceSetup({
   }, []);
 
   async function onCamera(id) {
-    const next = { ...selectedDevices, videoDeviceId: id };
+    pickedCameraRef.current = true;
+    const next = {
+      ...selectedRef.current,
+      videoDeviceId: id,
+      videoLabel: deviceLabel(devices.cameras, id),
+    };
     onSelectedDevices(next);
     await startPreview(next);
   }
 
   async function onMic(id) {
-    const next = { ...selectedDevices, audioDeviceId: id };
+    const next = {
+      ...selectedRef.current,
+      audioDeviceId: id,
+      audioLabel: deviceLabel(devices.mics, id),
+    };
     onSelectedDevices(next);
     await startPreview(next);
   }
@@ -104,7 +156,6 @@ export default function DeviceSetup({
       setError("Turn on your camera or microphone before joining.");
       return;
     }
-    // Hand the live stream to the call so we don't re-prompt for permissions.
     transferRef.current = true;
     onJoin(stream);
   }
@@ -133,11 +184,11 @@ export default function DeviceSetup({
         <VideoTile
           stream={stream}
           muted
-          mirror
+          mirror={!usingVirtual}
           speakerId={selectedDevices.speakerDeviceId}
           label={loading ? "Starting camera…" : displayName || "You"}
           overlay={!stream && !loading ? "Camera off" : null}
-          className="setup-preview"
+          className={`setup-preview${usingVirtual ? " is-contain" : ""}`}
         />
 
         <div className="card stack">
@@ -149,6 +200,10 @@ export default function DeviceSetup({
             onChange={onCamera}
             emptyLabel="No cameras found"
           />
+          <p className="hint">
+            Using OBS? In OBS click Start Virtual Camera, then choose OBS Virtual Camera here.
+            {isHost ? " The person who starts the meeting can send that as the camera." : ""}
+          </p>
           <DeviceSelect
             id="mic"
             label="Microphone"
@@ -163,7 +218,13 @@ export default function DeviceSetup({
               label="Speakers"
               value={selectedDevices.speakerDeviceId}
               options={devices.speakers}
-              onChange={(id) => onSelectedDevices((prev) => ({ ...prev, speakerDeviceId: id }))}
+              onChange={(id) =>
+                onSelectedDevices((prev) => ({
+                  ...prev,
+                  speakerDeviceId: id,
+                  speakerLabel: deviceLabel(devices.speakers, id),
+                }))
+              }
               emptyLabel="No speakers found"
             />
           )}
