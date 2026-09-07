@@ -6,7 +6,9 @@ import { ArrowIcon } from "../components/Icons.jsx";
 import {
   classifyMediaError,
   deviceLabel,
+  findObsCamera,
   getLocalStream,
+  isObsCamera,
   isVirtualCamera,
   listDevices,
   pickDefaultCamera,
@@ -59,7 +61,7 @@ export default function DeviceSetup({
       const listed = await listDevices();
       setDevices(listed);
 
-      const obs = listed.cameras.find(isVirtualCamera);
+      const obs = findObsCamera(listed.cameras);
       const prev = selectedRef.current;
       const shouldTakeObs = Boolean(isHost && obs && !pickedCameraRef.current && prev.videoDeviceId !== obs.deviceId);
       const next = withDeviceLabels(
@@ -80,7 +82,11 @@ export default function DeviceSetup({
     setLoading(true);
     setError("");
     try {
-      const media = await getLocalStream({ ...nextIds, preferVirtual: isHost });
+      const media = await getLocalStream({
+        ...nextIds,
+        preferVirtual: isHost,
+        requireObs: isHost,
+      });
       if (cancelledRef.current) {
         stopStream(media);
         return;
@@ -152,8 +158,13 @@ export default function DeviceSetup({
   }
 
   function joinCall() {
+    const videoLabel = stream?.getVideoTracks()?.[0]?.label || selectedRef.current.videoLabel || "";
     if (!stream) {
       setError("Turn on your camera or microphone before joining.");
+      return;
+    }
+    if (isHost && !isObsCamera({ label: videoLabel }) && !isVirtualCamera({ label: videoLabel })) {
+      setError("Start Virtual Camera in OBS, then choose OBS Virtual Camera. The other person will see that video.");
       return;
     }
     transferRef.current = true;
@@ -186,7 +197,13 @@ export default function DeviceSetup({
           muted
           mirror={!usingVirtual}
           speakerId={selectedDevices.speakerDeviceId}
-          label={loading ? "Starting camera…" : displayName || "You"}
+          label={
+            loading
+              ? "Starting camera…"
+              : usingVirtual
+                ? `${displayName || "You"} · OBS`
+                : displayName || "You"
+          }
           overlay={!stream && !loading ? "Camera off" : null}
           className={`setup-preview${usingVirtual ? " is-contain" : ""}`}
         />
@@ -201,8 +218,9 @@ export default function DeviceSetup({
             emptyLabel="No cameras found"
           />
           <p className="hint">
-            Using OBS? In OBS click Start Virtual Camera, then choose OBS Virtual Camera here.
-            {isHost ? " The person who starts the meeting can send that as the camera." : ""}
+            {isHost
+              ? "In OBS click Start Virtual Camera, then choose OBS Virtual Camera. The other person will see this scene, not your laptop camera."
+              : "Using OBS? In OBS click Start Virtual Camera, then choose OBS Virtual Camera here."}
           </p>
           <DeviceSelect
             id="mic"
@@ -232,7 +250,12 @@ export default function DeviceSetup({
             <p className="hint">This browser doesn’t support choosing an output device.</p>
           )}
 
-          <button className="btn btn-primary" type="button" onClick={joinCall} disabled={!stream}>
+          <button
+            className="btn btn-primary"
+            type="button"
+            onClick={joinCall}
+            disabled={!stream || (isHost && !usingVirtual)}
+          >
             Join call
             <ArrowIcon />
           </button>

@@ -4,18 +4,21 @@ import DeviceSelect from "../components/DeviceSelect.jsx";
 import ErrorBanner from "../components/ErrorBanner.jsx";
 import { CopyIcon, CheckIcon } from "../components/Icons.jsx";
 import { JITSI_DOMAIN, jitsiRoomName, loadJitsiApi } from "../lib/jitsi.js";
-import { isVirtualCamera } from "../lib/media.js";
+import { findObsCamera, isObsCamera, isVirtualCamera } from "../lib/media.js";
 
-function pickJitsiDevice(list, deviceId, label) {
-  return (
-    list.find((d) => d.deviceId && d.deviceId === deviceId) ||
-    list.find((d) => d.label && label && d.label === label) ||
-    null
-  );
+function labelsMatch(a, b) {
+  return `${a || ""}`.trim().toLowerCase() === `${b || ""}`.trim().toLowerCase();
+}
+
+function pickByLabel(list, label) {
+  if (!label) return null;
+  return list.find((d) => labelsMatch(d.label, label)) || null;
 }
 
 async function setJitsiDevice(api, kind, device) {
-  if (!device) return;
+  if (!device || !api) return;
+  const label = device.label || "";
+  const deviceId = device.deviceId || "";
   const setter =
     kind === "video"
       ? api.setVideoInputDevice
@@ -23,16 +26,35 @@ async function setJitsiDevice(api, kind, device) {
         ? api.setAudioInputDevice
         : api.setAudioOutputDevice;
   if (!setter) return;
+  await setter.call(api, label, deviceId);
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function currentVideoLabel(api) {
   try {
-    await setter.call(api, device.deviceId || device.label);
+    const current = await api.getCurrentDevices();
+    return current?.videoInput?.label || "";
   } catch {
-    if (device.label) await setter.call(api, device.label);
+    return "";
+  }
+}
+
+async function unmuteVideo(api) {
+  try {
+    const muted = await api.isVideoMuted?.();
+    if (muted) api.executeCommand("toggleVideo");
+  } catch {
+    /* ignore */
   }
 }
 
 export default function CallRoom({
   displayName,
   roomId,
+  isHost,
   selectedDevices,
   onLeave,
 }) {
@@ -45,9 +67,9 @@ export default function CallRoom({
   const [showDevices, setShowDevices] = useState(false);
   const [callDevices, setCallDevices] = useState({ cameras: [], mics: [], speakers: [] });
   const [activeDevices, setActiveDevices] = useState({
-    videoDeviceId: selectedDevices.videoDeviceId || "",
-    audioDeviceId: selectedDevices.audioDeviceId || "",
-    speakerDeviceId: selectedDevices.speakerDeviceId || "",
+    videoDeviceId: "",
+    audioDeviceId: "",
+    speakerDeviceId: "",
   });
 
   const mountRef = useRef(null);
@@ -80,32 +102,53 @@ export default function CallRoom({
     }
   }
 
-  async function applySelectedDevices(api, selected = selectedRef.current) {
-    const available = (await syncCallDevices(api)) || {};
-    const video =
-      pickJitsiDevice(available.videoInput || [], selected.videoDeviceId, selected.videoLabel) ||
-      (isVirtualCamera({ label: selected.videoLabel })
-        ? (available.videoInput || []).find(isVirtualCamera)
-        : null);
-    const audio = pickJitsiDevice(available.audioInput || [], selected.audioDeviceId, selected.audioLabel);
-    const speaker = pickJitsiDevice(available.audioOutput || [], selected.speakerDeviceId, selected.speakerLabel);
-
-    await setJitsiDevice(api, "video", video || (selected.videoLabel ? { label: selected.videoLabel } : null));
-    await setJitsiDevice(api, "audio", audio || (selected.audioLabel ? { label: selected.audioLabel } : null));
-    await setJitsiDevice(api, "speaker", speaker || (selected.speakerLabel ? { label: selected.speakerLabel } : null));
-
-    setActiveDevices({
-      videoDeviceId: video?.deviceId || selected.videoDeviceId || "",
-      audioDeviceId: audio?.deviceId || selected.audioDeviceId || "",
-      speakerDeviceId: speaker?.deviceId || selected.speakerDeviceId || "",
-    });
-
-    try {
-      const muted = await api.isVideoMuted?.();
-      if (muted) api.executeCommand("toggleVideo");
-    } catch {
-      /* ignore */
+  async function forceHostObsCamera(api) {
+    let lastObs = null;
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const available = await syncCallDevices(api);
+      const videos = available?.videoInput || [];
+      const selected = selectedRef.current;
+      const obs =
+        pickByLabel(videos, selected.videoLabel) ||
+        findObsCamera(videos) ||
+        videos.find((d) => isObsCamera(d) || isVirtualCamera(d)) ||
+        null;
+      if (obs) {
+        lastObs = obs;
+        await setJitsiDevice(api, "video", obs);
+        await unmuteVideo(api);
+        const label = await currentVideoLabel(api);
+        if (isObsCamera({ label }) || isVirtualCamera({ label }) || labelsMatch(label, obs.label)) {
+          setActiveDevices((prev) => ({ ...prev, videoDeviceId: obs.deviceId }));
+          return obs;
+        }
+      }
+      await delay(400);
     }
+    if (lastObs) {
+      setActiveDevices((prev) => ({ ...prev, videoDeviceId: lastObs.deviceId }));
+      return lastObs;
+    }
+    throw new Error(
+      "Could not send OBS into the meeting. In OBS click Start Virtual Camera, then choose OBS Virtual Camera.",
+    );
+  }
+
+  async function applyGuestDevices(api) {
+    const available = (await syncCallDevices(api)) || {};
+    const selected = selectedRef.current;
+    const video = pickByLabel(available.videoInput || [], selected.videoLabel);
+    const audio = pickByLabel(available.audioInput || [], selected.audioLabel);
+    const speaker = pickByLabel(available.audioOutput || [], selected.speakerLabel);
+    await setJitsiDevice(api, "video", video);
+    await setJitsiDevice(api, "audio", audio);
+    await setJitsiDevice(api, "speaker", speaker);
+    await unmuteVideo(api);
+    setActiveDevices({
+      videoDeviceId: video?.deviceId || "",
+      audioDeviceId: audio?.deviceId || "",
+      speakerDeviceId: speaker?.deviceId || "",
+    });
   }
 
   useEffect(() => {
@@ -119,6 +162,10 @@ export default function CallRoom({
 
         const height = Math.max(window.innerHeight, mountRef.current.clientHeight || 0, 640);
         const selected = selectedRef.current;
+        const hostObsLabel =
+          selected.videoLabel && (isObsCamera({ label: selected.videoLabel }) || isVirtualCamera({ label: selected.videoLabel }))
+            ? selected.videoLabel
+            : "OBS Virtual Camera";
 
         api = new JitsiMeetExternalAPI(JITSI_DOMAIN, {
           roomName: jitsiRoomName(roomId),
@@ -127,17 +174,23 @@ export default function CallRoom({
           height,
           lang: "en",
           userInfo: { displayName: displayName || "Guest" },
-          devices: {
-            ...(selected.videoLabel ? { videoInput: selected.videoLabel } : {}),
-            ...(selected.audioLabel ? { audioInput: selected.audioLabel } : {}),
-            ...(selected.speakerLabel ? { audioOutput: selected.speakerLabel } : {}),
-          },
+          devices: isHost
+            ? {
+                videoInput: hostObsLabel,
+                ...(selected.audioLabel ? { audioInput: selected.audioLabel } : {}),
+                ...(selected.speakerLabel ? { audioOutput: selected.speakerLabel } : {}),
+              }
+            : {
+                ...(selected.videoLabel ? { videoInput: selected.videoLabel } : {}),
+                ...(selected.audioLabel ? { audioInput: selected.audioLabel } : {}),
+                ...(selected.speakerLabel ? { audioOutput: selected.speakerLabel } : {}),
+              },
           configOverwrite: {
             prejoinConfig: { enabled: false },
-            disableInitialGUM: false,
+            disableInitialGUM: Boolean(isHost),
             disableDeepLinking: true,
             startWithAudioMuted: false,
-            startWithVideoMuted: false,
+            startWithVideoMuted: Boolean(isHost),
             disableInviteFunctions: true,
             hideConferenceSubject: true,
             disableLocalVideoFlip: true,
@@ -192,16 +245,23 @@ export default function CallRoom({
           setJoined(true);
           setError("");
           syncCount();
-          await applySelectedDevices(api);
+          try {
+            if (isHost) await forceHostObsCamera(api);
+            else await applyGuestDevices(api);
+          } catch (err) {
+            if (!cancelled) setError(err?.message || "Could not use OBS as the camera.");
+          }
         });
         api.addListener("deviceListChanged", async () => {
-          const available = await syncCallDevices(api);
-          const selected = selectedRef.current;
-          if (!isVirtualCamera({ label: selected.videoLabel })) return;
-          const video =
-            pickJitsiDevice(available?.videoInput || [], selected.videoDeviceId, selected.videoLabel) ||
-            (available?.videoInput || []).find(isVirtualCamera);
-          if (video) await setJitsiDevice(api, "video", video);
+          await syncCallDevices(api);
+          if (!isHost) return;
+          const label = await currentVideoLabel(api);
+          if (isObsCamera({ label }) || isVirtualCamera({ label })) return;
+          try {
+            await forceHostObsCamera(api);
+          } catch {
+            /* OBS may not be started yet */
+          }
         });
         api.addListener("participantJoined", syncCount);
         api.addListener("participantLeft", syncCount);
@@ -244,6 +304,7 @@ export default function CallRoom({
     const list = kind === "video" ? callDevices.cameras : kind === "audio" ? callDevices.mics : callDevices.speakers;
     const device = list.find((d) => d.deviceId === deviceId);
     await setJitsiDevice(api, kind, device || { deviceId });
+    if (kind === "video") await unmuteVideo(api);
     setActiveDevices((prev) => ({
       ...prev,
       ...(kind === "video"
@@ -318,7 +379,7 @@ export default function CallRoom({
             onChange={(id) => changeCallDevice("video", id)}
             emptyLabel="No cameras found"
           />
-          <p className="hint">OBS: start Virtual Camera in OBS, then pick OBS Virtual Camera.</p>
+          <p className="hint">The other person sees this camera. Hosts should pick OBS Virtual Camera.</p>
           <DeviceSelect
             id="call-mic"
             label="Microphone"

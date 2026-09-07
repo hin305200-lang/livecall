@@ -15,6 +15,8 @@ export function classifyMediaError(err) {
       return "The selected device isn’t available. Pick OBS Virtual Camera or another camera.";
     case "SecurityError":
       return "This browser blocked media access. Use HTTPS or localhost.";
+    case "ObsCameraMissing":
+      return err?.message || "Start Virtual Camera in OBS, then choose OBS Virtual Camera.";
     default:
       return err?.message || "Could not access your camera or microphone.";
   }
@@ -29,15 +31,23 @@ export function supportsSpeakerSelect() {
   return typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype;
 }
 
+export function isObsCamera(device) {
+  return /\bobs\b/i.test(`${device?.label || ""}`);
+}
+
 export function isVirtualCamera(device) {
   const label = `${device?.label || ""}`.toLowerCase();
   return /obs|virtual camera|virtual cam|\bvcam\b|unity capture|streamlabs|mmhmm|snap camera|ecamm|manycam|prism|ndi|elgato|camo/.test(label);
 }
 
+export function findObsCamera(cameras = []) {
+  return cameras.find(isObsCamera) || cameras.find(isVirtualCamera) || null;
+}
+
 export function pickDefaultCamera(cameras, preferVirtual = false) {
   if (!cameras?.length) return "";
   if (preferVirtual) {
-    const virtual = cameras.find(isVirtualCamera);
+    const virtual = findObsCamera(cameras);
     if (virtual) return virtual.deviceId;
   }
   return cameras[0].deviceId;
@@ -91,9 +101,20 @@ export async function getLocalStream({
   videoDeviceId,
   audioDeviceId,
   preferVirtual = false,
+  requireObs = false,
 } = {}) {
   const listed = await listDevices().catch(() => ({ cameras: [] }));
-  const cameras = cameraOrder(listed.cameras, videoDeviceId, preferVirtual);
+  let cameras = cameraOrder(listed.cameras, videoDeviceId, preferVirtual || requireObs);
+  if (requireObs) {
+    cameras = cameras.filter((device) => isObsCamera(device) || isVirtualCamera(device));
+    if (!cameras.length) {
+      const err = new Error(
+        "Start Virtual Camera in OBS, then choose OBS Virtual Camera. The other person will see that video.",
+      );
+      err.name = "ObsCameraMissing";
+      throw err;
+    }
+  }
   let lastErr;
 
   const tryVideo = async (video) =>
@@ -120,6 +141,12 @@ export async function getLocalStream({
       lastErr = err;
       if (err?.name === "NotAllowedError" || err?.name === "PermissionDeniedError") throw err;
     }
+  }
+
+  if (requireObs) {
+    throw lastErr || new Error(
+      "Could not open OBS Virtual Camera. In OBS click Start Virtual Camera, then try again.",
+    );
   }
 
   try {

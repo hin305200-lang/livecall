@@ -47,9 +47,8 @@ export default function App() {
   }
 
   function joinCall(stream) {
-    // Free the camera so the meeting can use it.
     stopStream(stream);
-    setScreen("call");
+    window.setTimeout(() => setScreen("call"), 200);
   }
 
   function leaveCall() {
